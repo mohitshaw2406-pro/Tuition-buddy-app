@@ -88,10 +88,15 @@ export default function StudentApp({ user, onLogout }) {
     setQuizError(null);
     try {
       const result = await claudeJSON(
-        `List all current NCERT 2024-25 chapters for "${subject}" Class ${user.class}.
-Return ONLY a JSON array like: [{"num":1,"name":"Chapter Name"}, ...]
-Include only chapters actually in the current NCERT textbook. No extra text.`,
-        "You are a CBSE/NCERT curriculum expert. Return only valid raw JSON arrays. No markdown, no backticks."
+        `You are a CBSE curriculum expert. List ONLY the chapters present in the LATEST NCERT 2024-25 rationalized textbook for "${subject}" Class ${user.class}.
+
+Important rules:
+- Use the REDUCED/RATIONALIZED syllabus (many chapters were removed in 2022-23 and further updated in 2024-25)
+- Do NOT include deleted or dropped chapters
+- For Class 6, use the NEW NEP 2020 based textbooks (Ganita Prakash for Maths, Curiosity for Science, etc.)
+- Return ONLY a JSON array: [{"num":1,"name":"Chapter Name"}, ...]
+- Chapter numbers should match actual NCERT book chapter numbers
+- No extra text, no explanation`,
       );
       if (Array.isArray(result) && result.length > 0) {
         setChapters(result);
@@ -145,7 +150,7 @@ Include only chapters actually in the current NCERT textbook. No extra text.`,
         `Generate exactly ${numQuestions} MCQ questions for ${topicDesc}.
 Difficulty: ${difficulty} (easy=basic recall, medium=concept understanding, hard=application/analysis).
 Rules:
-- Strictly follow current NCERT 2024-25 syllabus only
+- Strictly follow the RATIONALIZED NCERT 2024-25 syllabus only. Do NOT include content from dropped/deleted chapters.
 - Each question has exactly 4 options
 - For Hindi/Sanskrit subjects, write questions and options in that language
 - CBSE board exam style
