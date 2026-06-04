@@ -152,7 +152,7 @@ Difficulty: ${difficulty} (easy=basic recall, medium=concept understanding, hard
 Rules:
 - Strictly follow the RATIONALIZED NCERT 2024-25 syllabus only. Do NOT include content from dropped/deleted chapters.
 - Each question has exactly 4 options
-- For Hindi/Sanskrit subjects, write questions and options in that language
+- Write all questions and options in ENGLISH only, EXCEPT for Hindi and Sanskrit subjects where use Hindi/Sanskrit
 - CBSE board exam style
 
 Return ONLY a raw JSON array:
