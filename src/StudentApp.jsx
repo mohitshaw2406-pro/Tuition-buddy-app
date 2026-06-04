@@ -6,7 +6,6 @@ import {
 import { C, Btn, Card, ScoreBar } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
 
-// ─── SUBJECT ICONS (for quiz UI) ─────────────────────────────────────────────
 const SUBJECT_ICONS = {
   Mathematics:"📐", Physics:"⚡", Chemistry:"🧪", Biology:"🔬",
   Science:"🔭", "Social Science":"🌍", English:"📖", Hindi:"✍️",
@@ -25,21 +24,12 @@ const SUBJECT_COLORS = {
 const getColor = (subject) => SUBJECT_COLORS[subject] || SUBJECT_COLORS.default;
 const getIcon  = (subject) => SUBJECT_ICONS[subject]  || SUBJECT_ICONS.default;
 
-// ─── CLAUDE API CALL (reuse same pattern as firebase.js callClaude) ──────────
-async function claudeJSON(prompt, systemMsg) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
-      system: systemMsg || "You are a helpful assistant. Always respond with valid raw JSON only — no markdown, no backticks, no explanation.",
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-  const data = await response.json();
-  const text = data.content?.map(b => b.text || "").join("") || "";
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
+async function claudeJSON(prompt) {
+  const reply = await callClaude(
+    [{ role: "user", content: prompt }],
+    "You are a CBSE/NCERT curriculum expert. Return only valid raw JSON. No markdown, no backticks, no explanation, no preamble."
+  );
+  return JSON.parse(reply.replace(/```json|```/g, "").trim());
 }
 
 export default function StudentApp({ user, onLogout }) {
@@ -55,13 +45,12 @@ export default function StudentApp({ user, onLogout }) {
   const [streak, setStreak] = useState(user.streak || 1);
   const [weakTopics, setWeakTopics] = useState(user.weakTopics || []);
 
-  // ── QUIZ STATE (new chapter-wise flow) ──────────────────────────────────────
-  const [quizStep, setQuizStep] = useState("subject"); // subject | chapter | settings | quiz | result
+  const [quizStep, setQuizStep] = useState("subject"); 
   const [quizSubject, setQuizSubject] = useState(null);
-  const [chapters, setChapters] = useState([]);        // [{num, name}]
+  const [chapters, setChapters] = useState([]);        
   const [chaptersLoading, setChaptersLoading] = useState(false);
-  const [selectedChapter, setSelectedChapter] = useState(null); // null = full subject
-  const [quizMode, setQuizMode] = useState("chapter"); // chapter | full
+  const [selectedChapter, setSelectedChapter] = useState(null); 
+  const [quizMode, setQuizMode] = useState("chapter");
   const [numQuestions, setNumQuestions] = useState(10);
   const [difficulty, setDifficulty] = useState("medium");
   const [quizQuestions, setQuizQuestions] = useState([]);
@@ -73,7 +62,6 @@ export default function StudentApp({ user, onLogout }) {
   const [currentQIndex, setCurrentQIndex] = useState(0);
   const [answered, setAnswered] = useState(false);
   const [liveScore, setLiveScore] = useState(0);
-  // ────────────────────────────────────────────────────────────────────────────
 
   const [mode, setMode] = useState("chat");
   const [quizHistory, setQuizHistory] = useState(user.quizHistory || []);
@@ -85,8 +73,6 @@ export default function StudentApp({ user, onLogout }) {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
   useEffect(() => { if (!isDemo) updateStreak(user.uid).then(s => setStreak(s)); }, []);
 
-  // ── SUBJECTS for this class ──────────────────────────────────────────────────
-  // Use SUBJECTS from firebase.js for chat, but for quiz show class-appropriate subjects
   const getSubjectsForClass = () => {
     const cls = parseInt(user.class);
     if (cls >= 6 && cls <= 8)  return ["Mathematics","Science","Social Science","English","Hindi","Sanskrit"];
@@ -96,7 +82,6 @@ export default function StudentApp({ user, onLogout }) {
   };
   const classSubjects = getSubjectsForClass();
 
-  // ── STEP 1: Fetch chapters from AI ──────────────────────────────────────────
   const fetchChapters = async (subject) => {
     setChaptersLoading(true);
     setChapters([]);
