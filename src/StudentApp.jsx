@@ -6,6 +6,42 @@ import {
 import { C, Btn, Card, ScoreBar } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
 
+// ─── SUBJECT ICONS (for quiz UI) ─────────────────────────────────────────────
+const SUBJECT_ICONS = {
+  Mathematics:"📐", Physics:"⚡", Chemistry:"🧪", Biology:"🔬",
+  Science:"🔭", "Social Science":"🌍", English:"📖", Hindi:"✍️",
+  Sanskrit:"🕉️", Accountancy:"📊", "Business Studies":"💼", Economics:"📈",
+  History:"🏛️", Geography:"🗺️", "Political Science":"⚖️", default:"📚",
+};
+
+const SUBJECT_COLORS = {
+  Mathematics:"#6366F1", Physics:"#F97316", Chemistry:"#10B981",
+  Biology:"#22C55E", Science:"#10B981", "Social Science":"#F97316",
+  English:"#3B82F6", Hindi:"#A855F7", Sanskrit:"#F59E0B",
+  Accountancy:"#0EA5E9", "Business Studies":"#F43F5E", Economics:"#16A34A",
+  default:"#6366F1",
+};
+
+const getColor = (subject) => SUBJECT_COLORS[subject] || SUBJECT_COLORS.default;
+const getIcon  = (subject) => SUBJECT_ICONS[subject]  || SUBJECT_ICONS.default;
+
+// ─── CLAUDE API CALL (reuse same pattern as firebase.js callClaude) ──────────
+async function claudeJSON(prompt, systemMsg) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      system: systemMsg || "You are a helpful assistant. Always respond with valid raw JSON only — no markdown, no backticks, no explanation.",
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  const data = await response.json();
+  const text = data.content?.map(b => b.text || "").join("") || "";
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+}
+
 export default function StudentApp({ user, onLogout }) {
   const isMobile = useIsMobile();
   const [view, setView] = useState("chat");
@@ -18,12 +54,27 @@ export default function StudentApp({ user, onLogout }) {
   const [loading, setLoading] = useState(false);
   const [streak, setStreak] = useState(user.streak || 1);
   const [weakTopics, setWeakTopics] = useState(user.weakTopics || []);
-  const [quizSubject, setQuizSubject] = useState("Mathematics");
+
+  // ── QUIZ STATE (new chapter-wise flow) ──────────────────────────────────────
+  const [quizStep, setQuizStep] = useState("subject"); // subject | chapter | settings | quiz | result
+  const [quizSubject, setQuizSubject] = useState(null);
+  const [chapters, setChapters] = useState([]);        // [{num, name}]
+  const [chaptersLoading, setChaptersLoading] = useState(false);
+  const [selectedChapter, setSelectedChapter] = useState(null); // null = full subject
+  const [quizMode, setQuizMode] = useState("chapter"); // chapter | full
+  const [numQuestions, setNumQuestions] = useState(10);
+  const [difficulty, setDifficulty] = useState("medium");
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizChecked, setQuizChecked] = useState(false);
   const [quizResult, setQuizResult] = useState(null);
   const [quizLoading, setQuizLoading] = useState(false);
+  const [quizError, setQuizError] = useState(null);
+  const [currentQIndex, setCurrentQIndex] = useState(0);
+  const [answered, setAnswered] = useState(false);
+  const [liveScore, setLiveScore] = useState(0);
+  // ────────────────────────────────────────────────────────────────────────────
+
   const [mode, setMode] = useState("chat");
   const [quizHistory, setQuizHistory] = useState(user.quizHistory || []);
   const [totalQ, setTotalQ] = useState(user.totalQuestions || 0);
@@ -34,6 +85,164 @@ export default function StudentApp({ user, onLogout }) {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
   useEffect(() => { if (!isDemo) updateStreak(user.uid).then(s => setStreak(s)); }, []);
 
+  // ── SUBJECTS for this class ──────────────────────────────────────────────────
+  // Use SUBJECTS from firebase.js for chat, but for quiz show class-appropriate subjects
+  const getSubjectsForClass = () => {
+    const cls = parseInt(user.class);
+    if (cls >= 6 && cls <= 8)  return ["Mathematics","Science","Social Science","English","Hindi","Sanskrit"];
+    if (cls === 9 || cls === 10) return ["Mathematics","Science","Social Science","English","Hindi","Sanskrit"];
+    if (cls === 11 || cls === 12) return ["Mathematics","Physics","Chemistry","Biology","Accountancy","Business Studies","Economics","English","Hindi"];
+    return SUBJECTS;
+  };
+  const classSubjects = getSubjectsForClass();
+
+  // ── STEP 1: Fetch chapters from AI ──────────────────────────────────────────
+  const fetchChapters = async (subject) => {
+    setChaptersLoading(true);
+    setChapters([]);
+    setQuizError(null);
+    try {
+      const result = await claudeJSON(
+        `List all current NCERT 2024-25 chapters for "${subject}" Class ${user.class}.
+Return ONLY a JSON array like: [{"num":1,"name":"Chapter Name"}, ...]
+Include only chapters actually in the current NCERT textbook. No extra text.`,
+        "You are a CBSE/NCERT curriculum expert. Return only valid raw JSON arrays. No markdown, no backticks."
+      );
+      if (Array.isArray(result) && result.length > 0) {
+        setChapters(result);
+      } else {
+        throw new Error("Empty chapters");
+      }
+    } catch {
+      setQuizError("Chapters load nahi hue. Dobara try karo.");
+    }
+    setChaptersLoading(false);
+  };
+
+  const handleSubjectSelect = (subject) => {
+    setQuizSubject(subject);
+    setSelectedChapter(null);
+    setQuizMode("chapter");
+    setQuizStep("chapter");
+    fetchChapters(subject);
+  };
+
+  const handleChapterSelect = (ch) => {
+    setSelectedChapter(ch);
+    setQuizMode("chapter");
+  };
+
+  const handleFullSubject = () => {
+    setSelectedChapter(null);
+    setQuizMode("full");
+  };
+
+  const handleGoToSettings = () => setQuizStep("settings");
+
+  // ── STEP 2: Generate quiz questions via AI ───────────────────────────────────
+  const generateQuiz = async () => {
+    setQuizLoading(true);
+    setQuizError(null);
+    setQuizQuestions([]);
+    setQuizAnswers({});
+    setQuizChecked(false);
+    setQuizResult(null);
+    setCurrentQIndex(0);
+    setAnswered(false);
+    setLiveScore(0);
+
+    const topicDesc = quizMode === "full"
+      ? `all chapters of ${quizSubject} for Class ${user.class} NCERT 2024-25`
+      : `Chapter ${selectedChapter.num}: "${selectedChapter.name}" from ${quizSubject}, Class ${user.class} NCERT 2024-25`;
+
+    try {
+      const questions = await claudeJSON(
+        `Generate exactly ${numQuestions} MCQ questions for ${topicDesc}.
+Difficulty: ${difficulty} (easy=basic recall, medium=concept understanding, hard=application/analysis).
+Rules:
+- Strictly follow current NCERT 2024-25 syllabus only
+- Each question has exactly 4 options
+- For Hindi/Sanskrit subjects, write questions and options in that language
+- CBSE board exam style
+
+Return ONLY a raw JSON array:
+[{"question":"...","options":["A text","B text","C text","D text"],"correct":0,"explanation":"..."}]
+"correct" = 0-indexed position of correct answer. No extra text.`,
+        "You are a CBSE exam expert. Return only valid raw JSON. No markdown, no backticks, no preamble."
+      );
+      if (!Array.isArray(questions) || questions.length === 0) throw new Error("empty");
+      setQuizQuestions(questions);
+      setQuizStep("quiz");
+    } catch {
+      setQuizError("Questions generate nahi hue. Dobara try karo!");
+    }
+    setQuizLoading(false);
+  };
+
+  // ── STEP 3: Handle answer selection (one-by-one mode) ───────────────────────
+  const handleOptionSelect = (optIdx) => {
+    if (answered) return;
+    const newAnswers = { ...quizAnswers, [currentQIndex]: optIdx };
+    setQuizAnswers(newAnswers);
+    setAnswered(true);
+    if (optIdx === quizQuestions[currentQIndex].correct) {
+      setLiveScore(s => s + 1);
+    }
+  };
+
+  const handleNext = () => {
+    if (currentQIndex + 1 >= quizQuestions.length) {
+      finishQuiz();
+    } else {
+      setCurrentQIndex(i => i + 1);
+      setAnswered(false);
+    }
+  };
+
+  const finishQuiz = async () => {
+    const total = quizQuestions.length;
+    const pct = Math.round((liveScore / total) * 100);
+    const result = { score: liveScore, total, pct };
+    setQuizResult(result);
+    setQuizChecked(true);
+    setQuizStep("result");
+
+    const subjectLabel = quizMode === "full"
+      ? quizSubject
+      : `${quizSubject} Ch.${selectedChapter.num}`;
+    const entry = { subject: subjectLabel, score: liveScore, total, pct, date: new Date().toISOString() };
+    setQuizHistory(h => [entry, ...h]);
+
+    if (!isDemo) await saveQuizResult(user.uid, subjectLabel, liveScore, total, user.class);
+    if (liveScore < Math.ceil(total * 0.6)) {
+      const merged = [...new Set([...weakTopics, quizSubject])].slice(0, 5);
+      setWeakTopics(merged);
+      if (!isDemo) saveWeakTopics(user.uid, [quizSubject]);
+    }
+    setView("chat");
+    setMessages(m => [...m, {
+      role: "assistant",
+      content: `Quiz result: ${liveScore}/${total} on ${subjectLabel} (${pct}%). ${pct >= 80 ? "Ekdum zabardast! 🔥" : pct >= 60 ? "Achha hua! Thoda aur practice kar 💪" : "Koi baat nahi, practice se sab aata hai! Weak areas pe dhyan do 📖"}`
+    }]);
+  };
+
+  // ── Reset quiz state ─────────────────────────────────────────────────────────
+  const resetQuiz = () => {
+    setQuizStep("subject");
+    setQuizSubject(null);
+    setChapters([]);
+    setSelectedChapter(null);
+    setQuizQuestions([]);
+    setQuizAnswers({});
+    setQuizChecked(false);
+    setQuizResult(null);
+    setQuizError(null);
+    setCurrentQIndex(0);
+    setAnswered(false);
+    setLiveScore(0);
+  };
+
+  // ── CHAT SEND ────────────────────────────────────────────────────────────────
   const send = async (text) => {
     const msg = text || input.trim();
     if (!msg || loading) return;
@@ -63,60 +272,6 @@ export default function StudentApp({ user, onLogout }) {
       setMessages(m => [...m, { role: "assistant", content: "Oops! Connection mein problem hai. Try kar! 🙏" }]);
     }
     setLoading(false);
-  };
-
-  const startQuiz = async () => {
-    setQuizLoading(true); setQuizQuestions([]); setQuizAnswers({}); setQuizChecked(false); setQuizResult(null);
-    try {
-      const prompt = `Generate exactly 5 MCQ questions on "${quizSubject}" for a Class ${user.class} student.\nFormat strictly like this for each question:\nQ1. [question text here]\nA) [option]  B) [option]  C) [option]  D) [option]\nAnswer: A\nExplanation: [brief explanation]\n\nQ2. [question text here]\nA) [option]  B) [option]  C) [option]  D) [option]\nAnswer: B\nExplanation: [brief explanation]\n\nDo all 5 questions this way. Make questions appropriate for Class ${user.class} level.`;
-      const res = await callClaude([{ role: "user", content: prompt }], SYSTEM_PROMPT(user.class));
-      const parsed = parseQuiz(res);
-      if (parsed.length === 0) throw new Error("Parse failed");
-      setQuizQuestions(parsed);
-    } catch {
-      setQuizQuestions([]);
-    }
-    setQuizLoading(false);
-  };
-
-  const parseQuiz = (text) => {
-    const blocks = text.split(/\n(?=Q\d+\.)/).filter(b => b.trim());
-    return blocks.slice(0, 5).map((block, i) => {
-      const lines = block.trim().split("\n").filter(l => l.trim());
-      const question = lines[0]?.replace(/^Q\d+\.\s*/, "").trim() || `Question ${i + 1}`;
-      const optLine = lines.find(l => /A\)/i.test(l)) || "";
-      const opts = {
-        A: optLine.match(/A\)\s*([^B]+?)(?=\s+B\)|$)/i)?.[1]?.trim() || "",
-        B: optLine.match(/B\)\s*([^C]+?)(?=\s+C\)|$)/i)?.[1]?.trim() || "",
-        C: optLine.match(/C\)\s*([^D]+?)(?=\s+D\)|$)/i)?.[1]?.trim() || "",
-        D: optLine.match(/D\)\s*(.+?)$/i)?.[1]?.trim() || "",
-      };
-      const ansLine = lines.find(l => /Answer:/i.test(l)) || "";
-      const answer = ansLine.match(/Answer:\s*([A-D])/i)?.[1]?.toUpperCase() || "A";
-      const expLine = lines.find(l => /Explanation:/i.test(l)) || "";
-      const explanation = expLine.replace(/Explanation:/i, "").trim();
-      return { id: i, question, opts, answer, explanation };
-    }).filter(q => q.question && Object.values(q.opts).some(v => v));
-  };
-
-  const submitQuiz = async () => {
-    let score = 0;
-    quizQuestions.forEach(q => { if (quizAnswers[q.id] === q.answer) score++; });
-    const result = { score, total: quizQuestions.length, pct: Math.round((score / quizQuestions.length) * 100) };
-    setQuizResult(result); setQuizChecked(true);
-    const entry = { subject: quizSubject, score, total: quizQuestions.length, pct: result.pct, date: new Date().toISOString() };
-    setQuizHistory(h => [entry, ...h]);
-    if (!isDemo) await saveQuizResult(user.uid, quizSubject, score, quizQuestions.length, user.class);
-    if (score < 3) {
-      const merged = [...new Set([...weakTopics, quizSubject])].slice(0, 5);
-      setWeakTopics(merged);
-      if (!isDemo) saveWeakTopics(user.uid, [quizSubject]);
-    }
-    setView("chat");
-    setMessages(m => [...m, {
-      role: "assistant",
-      content: `Quiz result: ${score}/${quizQuestions.length} on ${quizSubject} (${result.pct}%). ${result.pct >= 80 ? "Ekdum zabardast! 🔥" : result.pct >= 60 ? "Accha hua! Thoda aur practice kar 💪" : "Koi baat nahi, practice se sab aata hai! Weak areas pe dhyan do 📖"}`
-    }]);
   };
 
   const startVoice = () => {
@@ -152,7 +307,7 @@ export default function StudentApp({ user, onLogout }) {
 
       <div style={{ padding: "12px 10px", flex: 1, overflowY: "auto" }}>
         {navItems.map(n => (
-          <button key={n.id} onClick={() => { setView(n.id); setSidebarOpen(false); }} style={{
+          <button key={n.id} onClick={() => { setView(n.id); if (n.id === "quiz") resetQuiz(); setSidebarOpen(false); }} style={{
             display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", marginBottom: 4,
             background: view === n.id ? `linear-gradient(135deg,${C.accent}22,${C.accentSoft || "#4f46e5"}22)` : "transparent",
             border: view === n.id ? `1px solid ${C.accent}44` : "1px solid transparent",
@@ -195,15 +350,303 @@ export default function StudentApp({ user, onLogout }) {
     </>
   );
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // QUIZ VIEW — Chapter-wise flow
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderQuizView = () => {
+    const color = quizSubject ? getColor(quizSubject) : C.accent;
+    const icon  = quizSubject ? getIcon(quizSubject) : "🧠";
+
+    // ── Step: Subject selection ──────────────────────────────────────────────
+    if (quizStep === "subject") return (
+      <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 20px" }}>
+        <div style={{ maxWidth: 600, margin: "0 auto" }}>
+          <h2 style={{ color: C.accent, fontSize: isMobile ? 17 : 20, margin: "0 0 4px", fontWeight: 800 }}>🧠 Quiz</h2>
+          <p style={{ color: C.muted, fontSize: 13, margin: "0 0 20px" }}>Class {user.class} — Subject choose karo</p>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr", gap: 10 }}>
+            {classSubjects.map(subject => (
+              <button key={subject} onClick={() => handleSubjectSelect(subject)} style={{
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
+                background: C.card, border: `2px solid ${getColor(subject)}44`,
+                borderRadius: 14, padding: "16px 10px", cursor: "pointer",
+                transition: "all 0.15s", fontFamily: "inherit",
+              }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = getColor(subject)}
+              onMouseLeave={e => e.currentTarget.style.borderColor = getColor(subject) + "44"}
+              >
+                <span style={{ fontSize: 28 }}>{getIcon(subject)}</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: getColor(subject), textAlign: "center", lineHeight: 1.3 }}>{subject}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+
+    // ── Step: Chapter selection ──────────────────────────────────────────────
+    if (quizStep === "chapter") return (
+      <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 20px" }}>
+        <div style={{ maxWidth: 600, margin: "0 auto" }}>
+          {/* Header */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <button onClick={() => setQuizStep("subject")} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, color: C.muted, padding: "4px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>← Back</button>
+            <div>
+              <h2 style={{ color, fontSize: 17, margin: 0, fontWeight: 800 }}>{icon} {quizSubject}</h2>
+              <p style={{ color: C.muted, fontSize: 12, margin: 0 }}>Class {user.class} — Chapter choose karo</p>
+            </div>
+          </div>
+
+          {/* Error */}
+          {quizError && (
+            <div style={{ background: "#7f1d1d44", border: "1px solid #ef444444", borderRadius: 10, padding: "12px 16px", color: "#fca5a5", marginBottom: 12, fontSize: 13 }}>
+              {quizError}
+              <button onClick={() => fetchChapters(quizSubject)} style={{ marginLeft: 12, background: "none", border: "none", color: "#fca5a5", cursor: "pointer", textDecoration: "underline", fontFamily: "inherit", fontSize: 13 }}>Retry</button>
+            </div>
+          )}
+
+          {/* Full subject option */}
+          <button onClick={handleFullSubject} style={{
+            display: "flex", alignItems: "center", gap: 12, width: "100%",
+            background: quizMode === "full" ? color + "22" : C.card,
+            border: `2px solid ${quizMode === "full" ? color : C.border}`,
+            borderRadius: 12, padding: "12px 16px", cursor: "pointer", marginBottom: 8,
+            fontFamily: "inherit", textAlign: "left",
+            boxShadow: quizMode === "full" ? `0 0 0 3px ${color}33` : "none",
+          }}>
+            <span style={{ fontSize: 22 }}>⚡</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700, color: quizMode === "full" ? color : C.text, fontSize: 14 }}>Full Subject Test</div>
+              <div style={{ fontSize: 12, color: C.muted }}>Saare chapters se mixed questions</div>
+            </div>
+            {quizMode === "full" && <span style={{ color, fontWeight: 800, fontSize: 18 }}>✓</span>}
+          </button>
+
+          {/* Divider */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "12px 0" }}>
+            <div style={{ flex: 1, height: 1, background: C.border }} />
+            <span style={{ color: C.muted, fontSize: 12 }}>ya chapter choose karo</span>
+            <div style={{ flex: 1, height: 1, background: C.border }} />
+          </div>
+
+          {/* Chapters loading */}
+          {chaptersLoading && (
+            <div style={{ textAlign: "center", padding: "30px 0", color: C.muted }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
+              <div style={{ fontSize: 13 }}>AI se chapters fetch ho rahe hain...</div>
+            </div>
+          )}
+
+          {/* Chapter list */}
+          {!chaptersLoading && chapters.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {chapters.map(ch => {
+                const isSelected = selectedChapter?.num === ch.num && quizMode === "chapter";
+                return (
+                  <button key={ch.num} onClick={() => handleChapterSelect(ch)} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    background: isSelected ? color + "18" : C.card,
+                    border: `1.5px solid ${isSelected ? color : C.border}`,
+                    borderRadius: 10, padding: "10px 14px", cursor: "pointer",
+                    textAlign: "left", fontFamily: "inherit",
+                    boxShadow: isSelected ? `0 0 0 2px ${color}33` : "none",
+                  }}>
+                    <span style={{
+                      minWidth: 30, height: 30, borderRadius: 8, display: "flex",
+                      alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800,
+                      background: isSelected ? color : C.dim, color: isSelected ? "#fff" : C.muted,
+                      flexShrink: 0,
+                    }}>{ch.num}</span>
+                    <span style={{ flex: 1, fontSize: 13, fontWeight: isSelected ? 600 : 400, color: isSelected ? color : C.text, lineHeight: 1.4 }}>{ch.name}</span>
+                    {isSelected && <span style={{ color, fontWeight: 800 }}>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Sticky start button */}
+          {(selectedChapter || quizMode === "full") && (
+            <div style={{
+              position: "sticky", bottom: 0, marginTop: 16,
+              background: C.card + "ee", backdropFilter: "blur(8px)",
+              borderTop: `1px solid ${C.border}`, borderRadius: "0 0 12px 12px",
+              padding: "12px 0",
+            }}>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, textAlign: "center" }}>
+                {quizMode === "full" ? `⚡ ${quizSubject} — Full Subject Test` : `📖 Ch.${selectedChapter.num}: ${selectedChapter.name}`}
+              </div>
+              <button onClick={handleGoToSettings} style={{
+                width: "100%", border: "none", borderRadius: 10,
+                padding: "12px", color: "#fff", fontSize: 15, fontWeight: 700,
+                cursor: "pointer", background: `linear-gradient(135deg, ${color}, ${color}cc)`,
+                fontFamily: "inherit",
+              }}>🚀 Aage Badho →</button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+
+    // ── Step: Settings ───────────────────────────────────────────────────────
+    if (quizStep === "settings") return (
+      <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 20px" }}>
+        <div style={{ maxWidth: 500, margin: "0 auto" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+            <button onClick={() => setQuizStep("chapter")} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, color: C.muted, padding: "4px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>← Back</button>
+            <div>
+              <h2 style={{ color, fontSize: 17, margin: 0, fontWeight: 800 }}>⚙️ Quiz Settings</h2>
+              <p style={{ color: C.muted, fontSize: 12, margin: 0 }}>
+                {quizMode === "full" ? `${icon} ${quizSubject} — Full Test` : `${icon} ${quizSubject} — Ch.${selectedChapter?.num}: ${selectedChapter?.name}`}
+              </p>
+            </div>
+          </div>
+
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: "20px" }}>
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>Kitne Questions?</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[5, 10, 15, 20].map(n => (
+                  <button key={n} onClick={() => setNumQuestions(n)} style={{
+                    flex: 1, padding: "10px 0", border: "none", borderRadius: 8, cursor: "pointer",
+                    background: numQuestions === n ? color : C.dim,
+                    color: numQuestions === n ? "#fff" : C.muted,
+                    fontWeight: 700, fontSize: 15, fontFamily: "inherit",
+                  }}>{n}</button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>Difficulty</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[{v:"easy",l:"Easy 😊"},{v:"medium",l:"Medium 🤔"},{v:"hard",l:"Hard 🔥"}].map(({v,l}) => (
+                  <button key={v} onClick={() => setDifficulty(v)} style={{
+                    flex: 1, padding: "10px 4px", border: "none", borderRadius: 8, cursor: "pointer",
+                    background: difficulty === v ? color : C.dim,
+                    color: difficulty === v ? "#fff" : C.muted,
+                    fontWeight: 600, fontSize: 12, fontFamily: "inherit",
+                  }}>{l}</button>
+                ))}
+              </div>
+            </div>
+
+            {quizError && (
+              <div style={{ background: "#7f1d1d44", border: "1px solid #ef444444", borderRadius: 8, padding: "10px 14px", color: "#fca5a5", marginBottom: 12, fontSize: 13 }}>{quizError}</div>
+            )}
+
+            <button onClick={generateQuiz} disabled={quizLoading} style={{
+              width: "100%", border: "none", borderRadius: 10, padding: "14px",
+              color: "#fff", fontSize: 16, fontWeight: 800, cursor: quizLoading ? "not-allowed" : "pointer",
+              background: quizLoading ? C.muted : `linear-gradient(135deg, ${color}, ${color}cc)`,
+              fontFamily: "inherit", opacity: quizLoading ? 0.7 : 1,
+            }}>
+              {quizLoading ? "⏳ Questions ban rahe hain..." : "🚀 Quiz Shuru Karo!"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+
+    // ── Step: Active Quiz (one question at a time) ───────────────────────────
+    if (quizStep === "quiz" && quizQuestions.length > 0) {
+      const q = quizQuestions[currentQIndex];
+      const progress = ((currentQIndex + 1) / quizQuestions.length) * 100;
+      const userAnswer = quizAnswers[currentQIndex];
+
+      return (
+        <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 20px" }}>
+          <div style={{ maxWidth: 600, margin: "0 auto" }}>
+            {/* Progress bar */}
+            <div style={{ height: 6, background: C.dim, borderRadius: 99, overflow: "hidden", marginBottom: 12 }}>
+              <div style={{ height: "100%", width: `${progress}%`, background: `linear-gradient(90deg, ${color}, ${color}cc)`, borderRadius: 99, transition: "width 0.4s ease" }} />
+            </div>
+
+            {/* Meta row */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <span style={{ fontSize: 12, color: C.muted, background: C.dim, borderRadius: 6, padding: "3px 8px" }}>
+                {icon} {quizSubject}{selectedChapter ? ` · Ch.${selectedChapter.num}` : ""}
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.muted }}>{currentQIndex + 1} / {quizQuestions.length}</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#22C55E" }}>✓ {liveScore}</span>
+            </div>
+
+            {/* Question */}
+            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: "18px 16px", marginBottom: 14 }}>
+              <div style={{ fontSize: isMobile ? 14 : 15, fontWeight: 600, color: C.text, lineHeight: 1.6 }}>
+                Q{currentQIndex + 1}. {q.question}
+              </div>
+            </div>
+
+            {/* Options */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {q.options.map((opt, idx) => {
+                let bg = C.card, border = C.border, txtColor = C.text;
+                if (answered) {
+                  if (idx === q.correct) { bg = "#052e1644"; border = "#22C55E"; txtColor = "#86efac"; }
+                  else if (idx === userAnswer) { bg = "#450a0a44"; border = "#EF4444"; txtColor = "#fca5a5"; }
+                }
+                return (
+                  <button key={idx} onClick={() => handleOptionSelect(idx)} disabled={answered} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    background: bg, border: `1.5px solid ${border}`,
+                    borderRadius: 10, padding: "12px 14px",
+                    cursor: answered ? "default" : "pointer",
+                    textAlign: "left", fontFamily: "inherit", color: txtColor,
+                    fontSize: isMobile ? 13 : 14, transition: "all 0.15s",
+                  }}>
+                    <span style={{
+                      minWidth: 28, height: 28, borderRadius: 7, display: "flex",
+                      alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12, flexShrink: 0,
+                      background: answered && idx === q.correct ? "#22C55E" : answered && idx === userAnswer ? "#EF4444" : C.dim,
+                      color: answered && (idx === q.correct || idx === userAnswer) ? "#fff" : C.muted,
+                    }}>{["A","B","C","D"][idx]}</span>
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Explanation */}
+            {answered && q.explanation && (
+              <div style={{ marginTop: 12, padding: "12px 14px", background: "#052e1633", border: `1px solid ${userAnswer === q.correct ? "#22C55E44" : "#F59E0B44"}`, borderRadius: 10, fontSize: 13, color: "#86efac", lineHeight: 1.5 }}>
+                <strong>{userAnswer === q.correct ? "✅ Sahi!" : "❌ Galat!"}</strong> {q.explanation}
+              </div>
+            )}
+
+            {/* Next button */}
+            {answered && (
+              <button onClick={handleNext} style={{
+                width: "100%", marginTop: 14, border: "none", borderRadius: 10, padding: "13px",
+                color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer",
+                background: `linear-gradient(135deg, ${color}, ${color}cc)`, fontFamily: "inherit",
+              }}>
+                {currentQIndex + 1 >= quizQuestions.length ? "📊 Results Dekho" : "Agla Sawaal →"}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Fallback loading during quiz generation
+    if (quizLoading) return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
+        <div style={{ fontSize: 36 }}>⏳</div>
+        <div style={{ color: C.muted, fontSize: 14 }}>AI questions bana raha hai...</div>
+      </div>
+    );
+
+    return null;
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
   return (
     <div style={{ display: "flex", height: "100vh", background: C.bg, fontFamily: "'Segoe UI',system-ui,sans-serif", color: C.text, overflow: "hidden" }}>
 
-      {/* Mobile overlay */}
       {isMobile && sidebarOpen && (
         <div onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, background: "#000a", zIndex: 40 }} />
       )}
 
-      {/* Sidebar */}
       {!isMobile ? (
         <div style={{ width: 220, background: C.card, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <SidebarContent />
@@ -220,10 +663,8 @@ export default function StudentApp({ user, onLogout }) {
         </div>
       )}
 
-      {/* Main */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
 
-        {/* Mobile top bar */}
         {isMobile && (
           <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}`, background: C.card + "dd", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
             <button onClick={() => setSidebarOpen(true)} style={{ background: "none", border: "none", color: C.text, fontSize: 22, cursor: "pointer", padding: 0 }}>☰</button>
@@ -299,57 +740,8 @@ export default function StudentApp({ user, onLogout }) {
 
         {/* ── QUIZ VIEW ── */}
         {view === "quiz" && (
-          <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 20px" }}>
-            <div style={{ maxWidth: 640, margin: "0 auto" }}>
-              <h2 style={{ color: C.accent, fontSize: isMobile ? 17 : 20, margin: "0 0 16px", fontWeight: 700 }}>🧠 Quiz — Class {user.class}</h2>
-              <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-                <select value={quizSubject} onChange={e => setQuizSubject(e.target.value)} style={{ background: C.dim, border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, padding: "9px 12px", fontSize: 14, fontFamily: "inherit", cursor: "pointer", flex: isMobile ? 1 : "none" }}>
-                  {SUBJECTS.map(s => <option key={s}>{s}</option>)}
-                </select>
-                <Btn onClick={startQuiz} disabled={quizLoading} style={{ flex: isMobile ? 1 : "none" }}>{quizLoading ? "Generating..." : "▶ Start Quiz"}</Btn>
-                {quizQuestions.length > 0 && !quizChecked && <Btn onClick={submitQuiz} style={{ background: C.green, flex: isMobile ? 1 : "none" }}>✓ Submit</Btn>}
-              </div>
-
-              {quizResult && (
-                <Card style={{ marginBottom: 16, borderColor: quizResult.pct >= 60 ? C.green + "44" : C.red + "44", background: quizResult.pct >= 60 ? C.success : C.danger }}>
-                  <div style={{ fontSize: 20, fontWeight: 800 }}>{quizResult.pct >= 80 ? "🔥 Excellent!" : quizResult.pct >= 60 ? "👍 Good Job!" : "💪 Keep Practicing!"}</div>
-                  <div style={{ fontSize: 15, marginTop: 4 }}>{quizResult.score}/{quizResult.total} on {quizSubject} ({quizResult.pct}%)</div>
-                </Card>
-              )}
-
-              {quizLoading && <div style={{ textAlign: "center", color: C.muted, padding: 40 }}>🔄 Generating questions...</div>}
-
-              {quizQuestions.length === 0 && !quizLoading && !quizResult && (
-                <div style={{ textAlign: "center", color: C.muted, padding: 40, fontSize: 14 }}>Subject select karo aur Start Quiz dabao! 🎯</div>
-              )}
-
-              {quizQuestions.map((q, i) => (
-                <Card key={q.id} style={{ marginBottom: 12 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: isMobile ? 14 : 15, lineHeight: 1.5 }}>Q{i + 1}. {q.question}</div>
-                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 8 }}>
-                    {Object.entries(q.opts).map(([k, v]) => {
-                      if (!v) return null;
-                      const sel = quizAnswers[q.id] === k;
-                      const correct = quizChecked && k === q.answer;
-                      const wrong = quizChecked && sel && k !== q.answer;
-                      return (
-                        <button key={k} onClick={() => !quizChecked && setQuizAnswers(a => ({ ...a, [q.id]: k }))} style={{
-                          background: correct ? "#064e3b" : wrong ? "#7c1f1f" : sel ? C.accent + "44" : C.bg,
-                          border: `1px solid ${correct ? C.green : wrong ? C.red : sel ? C.accent : C.border}`,
-                          borderRadius: 8, color: C.text, padding: "10px 12px", cursor: quizChecked ? "default" : "pointer",
-                          textAlign: "left", fontSize: 13, fontFamily: "inherit", lineHeight: 1.4
-                        }}>
-                          <span style={{ fontWeight: 700, color: C.accent, marginRight: 6 }}>{k})</span>{v}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {quizChecked && q.explanation && (
-                    <div style={{ marginTop: 10, fontSize: 13, color: "#86efac", background: "#05231644", borderRadius: 8, padding: "8px 12px" }}>✅ {q.explanation}</div>
-                  )}
-                </Card>
-              ))}
-            </div>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            {renderQuizView()}
           </div>
         )}
 
