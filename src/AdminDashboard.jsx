@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { CLASSES, fetchAllStudents, addStudent, removeStudent, editStudent, resetStudentPassword, broadcastMessage } from "./firebase.js";
+import { CLASSES, fetchAllStudents, addStudent, removeStudent, editStudent, resetStudentPassword, broadcastMessage, db, doc, updateDoc } from "./firebase.js";
 import { C, Card, Badge, ScoreBar } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
 
@@ -98,13 +98,33 @@ export default function AdminDashboard({ onLogout }) {
     setLoading(false);
   };
 
+  // ── APPROVE STUDENT ────────────────────────────────────────────────────────
+  const handleApprove = async (uid) => {
+    try {
+      await updateDoc(doc(db, "students", uid), { approved: true });
+      setStudents(prev => prev.map(s => s.uid === uid ? { ...s, approved: true } : s));
+      showToast("✅ Student approved!");
+    } catch (e) { showToast("❌ " + e.message); }
+  };
+
+  const handleReject = async (uid) => {
+    try {
+      await removeStudent(uid);
+      setStudents(prev => prev.filter(s => s.uid !== uid));
+      showToast("🗑️ Student rejected & removed.");
+    } catch (e) { showToast("❌ " + e.message); }
+  };
+  // ──────────────────────────────────────────────────────────────────────────
+
   const handleAdd = async () => {
     if (!addName.trim() || !addEmail.trim() || !addPassword.trim()) { setAddError("Sab fields fill karo."); return; }
     if (addPassword.length < 6) { setAddError("Password min 6 characters."); return; }
     setAddLoading(true); setAddError("");
     try {
       const s = await addStudent(addName, addEmail, addPassword, addClass);
-      setStudents(p => [...p, s]);
+      // Admin se add kiya = auto approved
+      await updateDoc(doc(db, "students", s.uid), { approved: true });
+      setStudents(p => [...p, { ...s, approved: true }]);
       setShowAdd(false); setAddName(""); setAddEmail(""); setAddPassword(""); setAddClass("9");
       showToast("✅ Student add ho gaya!");
     } catch (e) { setAddError(e.message.includes("email-already-in-use") ? "Email already registered." : e.message); }
@@ -143,23 +163,27 @@ export default function AdminDashboard({ onLogout }) {
     setBroadcastLoading(false);
   };
 
-  const filtered = students.filter(s =>
+  // Pending = approved is false or undefined (old accounts)
+  const pendingStudents = students.filter(s => s.approved === false);
+  const approvedStudents = students.filter(s => s.approved !== false);
+
+  const filtered = approvedStudents.filter(s =>
     (classFilter === "All" || s.class === classFilter) &&
     (s.name?.toLowerCase().includes(search.toLowerCase()) || s.class?.includes(search))
   );
 
   const classSummary = CLASSES.map(c => {
-    const ss = students.filter(s => s.class === c);
+    const ss = approvedStudents.filter(s => s.class === c);
     const allQ = ss.flatMap(s => s.quizHistory || []);
     const avg = allQ.length ? Math.round(allQ.reduce((a, q) => a + q.pct, 0) / allQ.length) : 0;
     return { class: c, count: ss.length, avg, quizzes: allQ.length, active: ss.filter(s => (s.streak || 0) > 0).length };
   }).filter(c => c.count > 0);
 
-  const totalStudents = students.length;
-  const totalQuizzes = students.reduce((a, s) => a + (s.totalQuizzes || 0), 0);
-  const totalQuestions = students.reduce((a, s) => a + (s.totalQuestions || 0), 0);
-  const inactive = students.filter(s => (s.streak || 0) < 2);
-  const allQ = students.flatMap(s => s.quizHistory || []);
+  const totalStudents = approvedStudents.length;
+  const totalQuizzes = approvedStudents.reduce((a, s) => a + (s.totalQuizzes || 0), 0);
+  const totalQuestions = approvedStudents.reduce((a, s) => a + (s.totalQuestions || 0), 0);
+  const inactive = approvedStudents.filter(s => (s.streak || 0) < 2);
+  const allQ = approvedStudents.flatMap(s => s.quizHistory || []);
   const globalAvg = allQ.length ? Math.round(allQ.reduce((a, q) => a + q.pct, 0) / allQ.length) : 0;
 
   const openStudent = (s) => { setSelected(s); setView("student"); if (isMobile) setSidebarOpen(false); };
@@ -167,6 +191,7 @@ export default function AdminDashboard({ onLogout }) {
   const navItems = [
     { id: "overview", icon: "📊", label: "Overview" },
     { id: "students", icon: "👨‍🎓", label: "Students" },
+    { id: "pending", icon: "⏳", label: `Pending${pendingStudents.length > 0 ? ` (${pendingStudents.length})` : ""}` },
     { id: "leaderboard", icon: "🏆", label: "Leaderboard" },
   ];
 
@@ -188,14 +213,19 @@ export default function AdminDashboard({ onLogout }) {
             background: (view === n.id || (view === "student" && n.id === "students")) ? `${C.accent}22` : "transparent",
             border: (view === n.id || (view === "student" && n.id === "students")) ? `1px solid ${C.accent}44` : "1px solid transparent",
             borderRadius: 10, color: (view === n.id || (view === "student" && n.id === "students")) ? C.accent : C.muted,
-            cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit"
-          }}><span>{n.icon}</span>{n.label}</button>
+            cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit", position: "relative",
+          }}>
+            <span>{n.icon}</span>{n.label}
+            {n.id === "pending" && pendingStudents.length > 0 && (
+              <span style={{ marginLeft: "auto", background: C.red, color: "#fff", borderRadius: 99, fontSize: 10, fontWeight: 800, padding: "2px 6px" }}>{pendingStudents.length}</span>
+            )}
+          </button>
         ))}
         <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
           <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingLeft: 4 }}>Quick Actions</div>
           <button onClick={() => { setShowAdd(true); setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", marginBottom: 6, background: `${C.green}22`, border: `1px solid ${C.green}33`, borderRadius: 8, color: C.green, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 600 }}>➕ Add Student</button>
           <button onClick={() => { setShowBroadcast(true); setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", marginBottom: 6, background: `${C.accent}22`, border: `1px solid ${C.accent}33`, borderRadius: 8, color: C.accent, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 600 }}>📢 Broadcast</button>
-          <button onClick={() => exportCSV(students)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: `${C.purple}22`, border: `1px solid ${C.purple}33`, borderRadius: 8, color: C.purple, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 600 }}>📤 Export CSV</button>
+          <button onClick={() => exportCSV(approvedStudents)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: `${C.purple}22`, border: `1px solid ${C.purple}33`, borderRadius: 8, color: C.purple, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 600 }}>📤 Export CSV</button>
         </div>
       </div>
       <div style={{ padding: 10 }}>
@@ -209,7 +239,6 @@ export default function AdminDashboard({ onLogout }) {
 
       {isMobile && sidebarOpen && <div onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, background: "#000a", zIndex: 40 }} />}
 
-      {/* Sidebar */}
       {!isMobile ? (
         <div style={{ width: 210, background: C.card, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <SidebarContent />
@@ -220,27 +249,77 @@ export default function AdminDashboard({ onLogout }) {
         </div>
       )}
 
-      {/* Main */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-
-        {/* Mobile top bar */}
         {isMobile && (
           <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}`, background: C.card + "dd", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
             <button onClick={() => setSidebarOpen(true)} style={{ background: "none", border: "none", color: C.text, fontSize: 22, cursor: "pointer", padding: 0 }}>☰</button>
             <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>🛡️ Admin Panel</span>
+            {pendingStudents.length > 0 && (
+              <button onClick={() => setView("pending")} style={{ background: `${C.red}22`, border: `1px solid ${C.red}44`, borderRadius: 8, color: C.red, padding: "6px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}>
+                ⏳ {pendingStudents.length}
+              </button>
+            )}
             <button onClick={() => setShowAdd(true)} style={{ background: `${C.green}22`, border: `1px solid ${C.green}44`, borderRadius: 8, color: C.green, padding: "6px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>➕ Add</button>
           </div>
         )}
 
         <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px" }}>
-
           {loading && <div style={{ textAlign: "center", color: C.muted, padding: 60 }}>🔄 Loading...</div>}
+
+          {/* ── PENDING APPROVAL VIEW ── */}
+          {!loading && view === "pending" && (
+            <div>
+              <h2 style={{ color: C.red, fontSize: isMobile ? 17 : 20, margin: "0 0 16px", fontWeight: 800 }}>
+                ⏳ Pending Approval ({pendingStudents.length})
+              </h2>
+              {pendingStudents.length === 0 ? (
+                <Card style={{ textAlign: "center", padding: "40px 20px" }}>
+                  <div style={{ fontSize: 40, marginBottom: 10 }}>✅</div>
+                  <div style={{ color: C.muted, fontSize: 14 }}>Koi pending student nahi hai!</div>
+                </Card>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pendingStudents.map(s => (
+                    <Card key={s.uid} style={{ borderColor: `${C.gold}44` }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                        <div style={{ width: 40, height: 40, borderRadius: "50%", background: `${C.gold}22`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, color: C.gold, flexShrink: 0 }}>
+                          {s.name?.[0]}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 15 }}>{s.name}</div>
+                          <div style={{ fontSize: 12, color: C.muted }}>Class {s.class} • {s.email}</div>
+                          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                            Registered: {s.createdAt?.seconds ? new Date(s.createdAt.seconds * 1000).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "Recently"}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                          <button onClick={() => handleApprove(s.uid)} style={{ padding: "8px 16px", background: `linear-gradient(135deg,${C.green},#16a34a)`, border: "none", borderRadius: 8, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+                            ✅ Approve
+                          </button>
+                          <button onClick={() => handleReject(s.uid)} style={{ padding: "8px 16px", background: `${C.red}22`, border: `1px solid ${C.red}44`, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+                            ❌ Reject
+                          </button>
+                        </div>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* OVERVIEW */}
           {!loading && view === "overview" && (<>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
               <h2 style={{ margin: 0, fontSize: isMobile ? 17 : 20, fontWeight: 800, color: C.accent }}>📊 Overview</h2>
-              <div style={{ fontSize: 12, color: C.muted, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "5px 10px" }}>🟢 {totalStudents} enrolled</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {pendingStudents.length > 0 && (
+                  <button onClick={() => setView("pending")} style={{ fontSize: 12, background: `${C.red}22`, border: `1px solid ${C.red}44`, borderRadius: 8, color: C.red, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}>
+                    ⏳ {pendingStudents.length} Pending
+                  </button>
+                )}
+                <div style={{ fontSize: 12, color: C.muted, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "5px 10px" }}>🟢 {totalStudents} enrolled</div>
+              </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(5,1fr)", gap: 10, marginBottom: 20 }}>
@@ -452,8 +531,8 @@ export default function AdminDashboard({ onLogout }) {
           {!loading && view === "leaderboard" && (
             <div>
               <h2 style={{ color: C.accent, fontSize: isMobile ? 17 : 20, margin: "0 0 16px", fontWeight: 800 }}>🏆 Leaderboard</h2>
-              {CLASSES.filter(c => students.some(s => s.class === c)).map(cls => {
-                const cs = students.filter(s => s.class === cls)
+              {CLASSES.filter(c => approvedStudents.some(s => s.class === c)).map(cls => {
+                const cs = approvedStudents.filter(s => s.class === cls)
                   .map(s => ({ ...s, avg: s.quizHistory?.length ? Math.round(s.quizHistory.reduce((a, q) => a + q.pct, 0) / s.quizHistory.length) : 0 }))
                   .sort((a, b) => b.avg - a.avg || (b.streak || 0) - (a.streak || 0));
                 return (
@@ -501,7 +580,6 @@ export default function AdminDashboard({ onLogout }) {
           </div>
         </Modal>
       )}
-
       {showEdit && (
         <Modal title="✏️ Edit Student" onClose={() => setShowEdit(null)}>
           <Input label="Name" value={editName} onChange={setEditName} />
@@ -517,7 +595,6 @@ export default function AdminDashboard({ onLogout }) {
           </div>
         </Modal>
       )}
-
       {showConfirmDelete && (
         <Modal title="🗑️ Remove Student?" onClose={() => setShowConfirmDelete(null)}>
           <p style={{ color: C.muted, fontSize: 14, marginBottom: 18 }}><strong style={{ color: C.text }}>{showConfirmDelete.name}</strong> ka saara data delete ho jayega!</p>
@@ -527,7 +604,6 @@ export default function AdminDashboard({ onLogout }) {
           </div>
         </Modal>
       )}
-
       {showBroadcast && (
         <Modal title="📢 Broadcast Message" onClose={() => setShowBroadcast(false)}>
           <p style={{ color: C.muted, fontSize: 13, marginBottom: 10 }}>Sare <strong style={{ color: C.text }}>{totalStudents} students</strong> ko message jayega.</p>
