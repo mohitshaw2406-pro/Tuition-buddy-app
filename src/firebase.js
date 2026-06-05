@@ -167,4 +167,4 @@ export const updateStreak = async (uid) => {
   return streak;
 };
 
-export { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, doc, setDoc, getDoc, serverTimestamp };
+export { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, doc, setDoc, getDoc, updateDoc, serverTimestamp };
