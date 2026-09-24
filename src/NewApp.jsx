@@ -6,7 +6,7 @@ import {
 import AuthScreen from "./AuthScreen.jsx";
 import StudentApp from "./StudentApp.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
-import { C } from "./ui.jsx";
+import { C } from "./constants.js";
 
 // ─── PENDING APPROVAL SCREEN ──────────────────────────────────────────────────
 function PendingScreen({ user, onLogout }) {
@@ -42,8 +42,9 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
 
   useEffect(() => {
+    let unsubscribe = () => {};
     try {
-      const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
         if (fbUser) {
           try {
             const snap = await getDoc(doc(db, "students", fbUser.uid));
@@ -61,16 +62,28 @@ export default function App() {
             } else {
               setUser(null);
             }
-          } catch { setUser(null); }
-        } else { setUser(null); }
+          } catch {
+            setUser(null);
+          }
+        } else {
+          setUser(null);
+        }
         setAuthLoading(false);
       });
-      return unsubscribe;
-    } catch { setAuthLoading(false); }
+    } catch {
+      setTimeout(() => setAuthLoading(false), 0);
+    }
+    return () => {
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
   }, []);
 
   const handleLogout = async () => {
-    try { await signOut(auth); } catch {}
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.warn("Logout error:", err);
+    }
     setUser(null);
   };
 

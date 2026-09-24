@@ -4,7 +4,8 @@ import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
   doc, setDoc, getDoc, serverTimestamp
 } from "./firebase.js";
-import { C, Btn, Input, Card } from "./ui.jsx";
+import { C } from "./constants.js";
+import { Btn, Input, Card } from "./ui.jsx";
 
 export default function AuthScreen({ onLogin }) {
   const [tab, setTab] = useState("login");
@@ -13,7 +14,7 @@ export default function AuthScreen({ onLogin }) {
   const [err, setErr] = useState(""); const [loading, setLoading] = useState(false);
   const [signupDone, setSignupDone] = useState(false); // ← new: show pending message
 
-  const isDemo = FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
+  const isDemo = !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
 
   const handleLogin = async () => {
     setErr(""); setLoading(true);

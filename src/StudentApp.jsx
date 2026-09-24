@@ -3,7 +3,8 @@ import {
   SUBJECTS, SYSTEM_PROMPT, callClaude, detectWeakTopicsFromChat,
   saveQuizResult, saveDoubts, saveWeakTopics, updateStreak
 } from "./firebase.js";
-import { C, Btn, Card, ScoreBar } from "./ui.jsx";
+import { C } from "./constants.js";
+import { Card, ScoreBar } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
 
 const SUBJECT_ICONS = {
@@ -55,8 +56,6 @@ export default function StudentApp({ user, onLogout }) {
   const [difficulty, setDifficulty] = useState("medium");
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [quizAnswers, setQuizAnswers] = useState({});
-  const [quizChecked, setQuizChecked] = useState(false);
-  const [quizResult, setQuizResult] = useState(null);
   const [quizLoading, setQuizLoading] = useState(false);
   const [quizError, setQuizError] = useState(null);
   const [currentQIndex, setCurrentQIndex] = useState(0);
@@ -71,7 +70,11 @@ export default function StudentApp({ user, onLogout }) {
   const isDemo = user.uid === "demo-student";
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
-  useEffect(() => { if (!isDemo) updateStreak(user.uid).then(s => setStreak(s)); }, []);
+  useEffect(() => {
+    if (!isDemo) {
+      updateStreak(user.uid).then(s => setStreak(s));
+    }
+  }, [isDemo, user.uid]);
 
   const getSubjectsForClass = () => {
     const cls = parseInt(user.class);
@@ -135,8 +138,6 @@ Important rules:
     setQuizError(null);
     setQuizQuestions([]);
     setQuizAnswers({});
-    setQuizChecked(false);
-    setQuizResult(null);
     setCurrentQIndex(0);
     setAnswered(false);
     setLiveScore(0);
@@ -192,9 +193,6 @@ Return ONLY a raw JSON array:
   const finishQuiz = async () => {
     const total = quizQuestions.length;
     const pct = Math.round((liveScore / total) * 100);
-    const result = { score: liveScore, total, pct };
-    setQuizResult(result);
-    setQuizChecked(true);
     setQuizStep("result");
 
     const subjectLabel = quizMode === "full"
@@ -224,8 +222,6 @@ Return ONLY a raw JSON array:
     setSelectedChapter(null);
     setQuizQuestions([]);
     setQuizAnswers({});
-    setQuizChecked(false);
-    setQuizResult(null);
     setQuizError(null);
     setCurrentQIndex(0);
     setAnswered(false);
@@ -283,7 +279,7 @@ Return ONLY a raw JSON array:
     { l: "🔢 Algebra", m: "How do I solve linear equations? Show me the method" },
   ];
 
-  const SidebarContent = () => (
+  const renderSidebarContent = () => (
     <>
       <div style={{ padding: "20px 16px 14px", borderBottom: `1px solid ${C.border}` }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -639,7 +635,7 @@ Return ONLY a raw JSON array:
 
       {!isMobile ? (
         <div style={{ width: 220, background: C.card, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          <SidebarContent />
+          {renderSidebarContent()}
         </div>
       ) : (
         <div style={{
@@ -649,7 +645,7 @@ Return ONLY a raw JSON array:
           transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)",
           transition: "transform 0.25s ease"
         }}>
-          <SidebarContent />
+          {renderSidebarContent()}
         </div>
       )}
 

@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  signOut, onAuthStateChanged, sendPasswordResetEmail, deleteUser
+  signOut, onAuthStateChanged, sendPasswordResetEmail
 } from "firebase/auth";
 import {
   getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc,
@@ -11,12 +11,12 @@ import {
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 
 export const FIREBASE_CONFIG = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "YOUR_API_KEY",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "tuition-buddy.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "tuition-buddy",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "tuition-buddy.appspot.com",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1234567890:web:abcdef123456"
 };
 
 export const ADMIN_EMAIL = "anime.aura.2406@gmail.com";
