@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import {
-  auth, db, ADMIN_EMAIL,
-  onAuthStateChanged, signOut, doc, getDoc
+  auth, db,
+  onAuthStateChanged, signOut, doc, getDoc, verifyAdminSession
 } from "./firebase.js";
 import AuthScreen from "./AuthScreen.jsx";
 import StudentApp from "./StudentApp.jsx";
@@ -57,10 +57,14 @@ export default function App() {
                 isAdmin: false,
                 pendingApproval: data.approved === false,
               });
-            } else if (fbUser.email === ADMIN_EMAIL) {
-              setUser({ uid: fbUser.uid, isAdmin: true, name: "Admin" });
             } else {
-              setUser(null);
+              // Check if user is a server-verified admin
+              const isRealAdmin = await verifyAdminSession(fbUser);
+              if (isRealAdmin) {
+                setUser({ uid: fbUser.uid, isAdmin: true, name: "Admin" });
+              } else {
+                setUser(null);
+              }
             }
           } catch {
             setUser(null);

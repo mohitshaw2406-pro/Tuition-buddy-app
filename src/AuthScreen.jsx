@@ -1,8 +1,8 @@
 import { useState } from "react";
 import {
-  auth, db, FIREBASE_CONFIG, ADMIN_EMAIL, CLASSES,
+  auth, db, FIREBASE_CONFIG, CLASSES,
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  doc, setDoc, getDoc, serverTimestamp
+  doc, setDoc, getDoc, serverTimestamp, verifyAdminSession
 } from "./firebase.js";
 import { C } from "./constants.js";
 import { Btn, Input, Card } from "./ui.jsx";
@@ -31,8 +31,13 @@ export default function AuthScreen({ onLogin }) {
         }
         // ────────────────────────────────────────────────────────────
         onLogin({ uid: cred.user.uid, ...data, isAdmin: false });
-      } else if (email === ADMIN_EMAIL) {
-        onLogin({ uid: cred.user.uid, isAdmin: true, name: "Admin" });
+      } else {
+        const isRealAdmin = await verifyAdminSession(cred.user);
+        if (isRealAdmin) {
+          onLogin({ uid: cred.user.uid, isAdmin: true, name: "Admin" });
+        } else {
+          setErr("Account not found. Please contact the administrator.");
+        }
       }
     } catch (e) {
       setErr(e.message.includes("invalid-credential") ? "Wrong email or password." : e.message);

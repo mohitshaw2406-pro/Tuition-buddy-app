@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  signOut, onAuthStateChanged, sendPasswordResetEmail
+  signOut, onAuthStateChanged, sendPasswordResetEmail, getIdTokenResult
 } from "firebase/auth";
 import {
   getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc,
@@ -167,4 +167,27 @@ export const updateStreak = async (uid) => {
   return streak;
 };
 
-export { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, doc, setDoc, getDoc, updateDoc, serverTimestamp };
+export const verifyAdminSession = async (user) => {
+  if (!user || user.uid === "demo-admin" || user.uid === "demo-student") {
+    return false;
+  }
+  try {
+    const tokenResult = await getIdTokenResult(user, true);
+    if (!tokenResult?.claims?.admin) {
+      return false;
+    }
+    const res = await fetch("/api/admin/verify", {
+      headers: {
+        Authorization: `Bearer ${tokenResult.token}`,
+      },
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.authorized === true && data?.admin === true;
+  } catch (err) {
+    console.warn("verifyAdminSession error:", err);
+    return false;
+  }
+};
+
+export { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail, getIdTokenResult, doc, setDoc, getDoc, updateDoc, serverTimestamp };
