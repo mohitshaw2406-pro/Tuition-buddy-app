@@ -4,50 +4,6 @@ import { C } from "./constants.js";
 import { Card, Badge, ScoreBar } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
 
-const DEMO_STUDENTS = [
-  {
-    uid: "demo-student-1",
-    name: "Rahul Sharma",
-    class: "10",
-    email: "rahul@tuitionbuddy.app",
-    streak: 5,
-    totalQuizzes: 6,
-    totalQuestions: 30,
-    weakTopics: ["Quadratic Equations", "Photosynthesis"],
-    quizHistory: [
-      { subject: "Mathematics", score: 4, total: 5, pct: 80, date: new Date().toISOString() },
-      { subject: "Science", score: 3, total: 5, pct: 60, date: new Date(Date.now() - 86400000).toISOString() }
-    ],
-    approved: true
-  },
-  {
-    uid: "demo-student-2",
-    name: "Priya Patel",
-    class: "9",
-    email: "priya@tuitionbuddy.app",
-    streak: 3,
-    totalQuizzes: 4,
-    totalQuestions: 20,
-    weakTopics: ["Linear Equations"],
-    quizHistory: [
-      { subject: "Mathematics", score: 5, total: 5, pct: 100, date: new Date().toISOString() }
-    ],
-    approved: true
-  },
-  {
-    uid: "demo-student-3",
-    name: "Aman Gupta",
-    class: "11",
-    email: "aman@tuitionbuddy.app",
-    streak: 1,
-    totalQuizzes: 1,
-    totalQuestions: 5,
-    weakTopics: ["Thermodynamics"],
-    quizHistory: [],
-    approved: false
-  }
-];
-
 const Btn = ({ children, onClick, disabled, variant = "primary", style = {}, small = false }) => (
   <button onClick={onClick} disabled={disabled} style={{
     padding: small ? "6px 14px" : "10px 22px",
@@ -132,6 +88,8 @@ export default function AdminDashboard({ onLogout }) {
   const [broadcastMsg, setBroadcastMsg] = useState(""); const [broadcastLoading, setBroadcastLoading] = useState(false);
   const [toast, setToast] = useState("");
 
+  const [fetchError, setFetchError] = useState("");
+
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
 
   useEffect(() => {
@@ -140,11 +98,15 @@ export default function AdminDashboard({ onLogout }) {
       try {
         const data = await fetchAllStudents();
         if (isMounted) {
-          setStudents(data && data.length > 0 ? data : DEMO_STUDENTS);
+          setStudents(Array.isArray(data) ? data : []);
+          setFetchError("");
         }
-      } catch {
+      } catch (err) {
         if (isMounted) {
-          setStudents(DEMO_STUDENTS);
+          setStudents([]);
+          const errMsg = err?.message || "Failed to fetch students from Firebase.";
+          setFetchError(errMsg);
+          showToast("❌ " + errMsg);
         }
       } finally {
         if (isMounted) {
@@ -324,6 +286,13 @@ export default function AdminDashboard({ onLogout }) {
         )}
 
         <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px" }}>
+          {fetchError && (
+            <div style={{ background: `${C.red}22`, border: `1px solid ${C.red}44`, borderRadius: 10, padding: "12px 16px", color: "#fca5a5", fontSize: 13, marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <span>⚠️ Firebase Error: {fetchError}</span>
+              <button onClick={() => setFetchError("")} style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: 16 }}>✕</button>
+            </div>
+          )}
+
           {loading && <div style={{ textAlign: "center", color: C.muted, padding: 60 }}>🔄 Loading...</div>}
 
           {/* ── PENDING APPROVAL VIEW ── */}
@@ -479,31 +448,46 @@ export default function AdminDashboard({ onLogout }) {
                 ))}
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fill,minmax(270px,1fr))", gap: 12 }}>
-              {filtered.map(s => {
-                const avg = s.quizHistory?.length ? Math.round(s.quizHistory.reduce((a, q) => a + q.pct, 0) / s.quizHistory.length) : 0;
-                return (
-                  <Card key={s.uid} style={{ cursor: "pointer" }} onClick={() => openStudent(s)}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                      <div style={{ width: 36, height: 36, borderRadius: "50%", background: `linear-gradient(135deg,${C.accent},${C.purple})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, flexShrink: 0 }}>{s.name?.[0]}</div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</div>
-                        <div style={{ fontSize: 11, color: C.muted }}>Class {s.class} • 🔥{s.streak || 0}d</div>
+            {filtered.length === 0 ? (
+              <Card style={{ textAlign: "center", padding: "40px 20px" }}>
+                <div style={{ fontSize: 36, marginBottom: 10 }}>👨‍🎓</div>
+                <div style={{ color: C.text, fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+                  {students.length === 0 ? "Koi student register nahi hua hai" : "Koi matching student nahi mila"}
+                </div>
+                <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>
+                  {students.length === 0 ? "Students app pe signup karenge ya aap '➕ Add Student' se direct add kar sakte hain." : "Try changing the search keyword or class filter."}
+                </div>
+                {students.length === 0 && (
+                  <Btn onClick={() => setShowAdd(true)} small>➕ Add Student Now</Btn>
+                )}
+              </Card>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fill,minmax(270px,1fr))", gap: 12 }}>
+                {filtered.map(s => {
+                  const avg = s.quizHistory?.length ? Math.round(s.quizHistory.reduce((a, q) => a + q.pct, 0) / s.quizHistory.length) : 0;
+                  return (
+                    <Card key={s.uid} style={{ cursor: "pointer" }} onClick={() => openStudent(s)}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                        <div style={{ width: 36, height: 36, borderRadius: "50%", background: `linear-gradient(135deg,${C.accent},${C.purple})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, flexShrink: 0 }}>{s.name?.[0]}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</div>
+                          <div style={{ fontSize: 11, color: C.muted }}>Class {s.class} • 🔥{s.streak || 0}d</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 17, fontWeight: 800, color: sc(avg) }}>{avg}%</div>
+                        </div>
                       </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div style={{ fontSize: 17, fontWeight: 800, color: sc(avg) }}>{avg}%</div>
+                      <ScoreBar pct={avg} color={sc(avg)} />
+                      <div style={{ display: "flex", gap: 6, marginTop: 10 }} onClick={e => e.stopPropagation()}>
+                        <button onClick={() => { setShowEdit(s); setEditName(s.name); setEditClass(s.class); }} style={{ flex: 1, padding: "5px 0", fontSize: 11, borderRadius: 7, background: `${C.accent}22`, color: C.accent, border: `1px solid ${C.accent}44`, cursor: "pointer" }}>✏️ Edit</button>
+                        <button onClick={() => handleReset(s.email)} style={{ flex: 1, padding: "5px 0", fontSize: 11, borderRadius: 7, background: `${C.gold}22`, color: C.gold, border: `1px solid ${C.gold}44`, cursor: "pointer" }}>🔑 Reset</button>
+                        <button onClick={() => setShowConfirmDelete(s)} style={{ flex: 1, padding: "5px 0", fontSize: 11, borderRadius: 7, background: `${C.red}22`, color: C.red, border: `1px solid ${C.red}44`, cursor: "pointer" }}>🗑️</button>
                       </div>
-                    </div>
-                    <ScoreBar pct={avg} color={sc(avg)} />
-                    <div style={{ display: "flex", gap: 6, marginTop: 10 }} onClick={e => e.stopPropagation()}>
-                      <button onClick={() => { setShowEdit(s); setEditName(s.name); setEditClass(s.class); }} style={{ flex: 1, padding: "5px 0", fontSize: 11, borderRadius: 7, background: `${C.accent}22`, color: C.accent, border: `1px solid ${C.accent}44`, cursor: "pointer" }}>✏️ Edit</button>
-                      <button onClick={() => handleReset(s.email)} style={{ flex: 1, padding: "5px 0", fontSize: 11, borderRadius: 7, background: `${C.gold}22`, color: C.gold, border: `1px solid ${C.gold}44`, cursor: "pointer" }}>🔑 Reset</button>
-                      <button onClick={() => setShowConfirmDelete(s)} style={{ flex: 1, padding: "5px 0", fontSize: 11, borderRadius: 7, background: `${C.red}22`, color: C.red, border: `1px solid ${C.red}44`, cursor: "pointer" }}>🗑️</button>
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
           </>)}
 
           {/* STUDENT DETAIL */}
