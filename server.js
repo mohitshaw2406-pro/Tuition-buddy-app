@@ -1,9 +1,15 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
-import admin from 'firebase-admin';
+import { initializeApp, getApps, cert, applicationDefault } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+// Load environment variables from .env/.env (fallback to default .env if not found)
+dotenv.config({ path: path.resolve(process.cwd(), '.env/.env') });
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,7 +19,7 @@ const __dirname = path.dirname(__filename);
 // 1. FIREBASE_SERVICE_ACCOUNT (raw JSON string or base64 encoded JSON string)
 // 2. Google Application Default Credentials (e.g. in GCP / Cloud Run environment)
 // 3. Fallback projectId from FIREBASE_PROJECT_ID or VITE_FIREBASE_PROJECT_ID
-if (!admin.apps.length) {
+if (!getApps().length) {
   try {
     const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
     const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
@@ -27,23 +33,36 @@ if (!admin.apps.length) {
         const decoded = Buffer.from(rawServiceAccount, 'base64').toString('utf8');
         parsedCredentials = JSON.parse(decoded);
       }
-      admin.initializeApp({
-        credential: admin.credential.cert(parsedCredentials),
+      initializeApp({
+        credential: cert(parsedCredentials),
         projectId: parsedCredentials.project_id || projectId,
       });
     } else {
-      // Use application default credentials or project config
-      admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
-        projectId: projectId || undefined,
-      });
+      let initialized = false;
+      try {
+        const appDefaultCred = applicationDefault();
+        if (appDefaultCred) {
+          initializeApp({
+            credential: appDefaultCred,
+            projectId: projectId || undefined,
+          });
+          initialized = true;
+        }
+      } catch {
+        // applicationDefault credentials not present in local environment
+      }
+
+      if (!initialized) {
+        initializeApp({
+          projectId: projectId || undefined,
+        });
+      }
     }
   } catch (err) {
     console.warn('[Server] Firebase Admin initialization notice:', err.message);
-    // If applicationDefault() fails (e.g. locally without ADC credentials file), initialize with projectId only
-    if (!admin.apps.length) {
+    if (!getApps().length) {
       const fallbackProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
-      admin.initializeApp({
+      initializeApp({
         projectId: fallbackProjectId || undefined,
       });
     }
@@ -77,7 +96,7 @@ export async function requireAdmin(req, res, next) {
   }
 
   try {
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const decodedToken = await getAuth().verifyIdToken(idToken);
 
     if (decodedToken.admin !== true) {
       return res.status(403).json({
