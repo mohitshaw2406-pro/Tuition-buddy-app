@@ -1,5 +1,11 @@
+import path from 'path';
+import dotenv from 'dotenv';
 import { initializeApp, getApps, cert, applicationDefault } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+
+// Load environment variables from the project's actual env file: .env/.env (fallback to default .env if not found)
+dotenv.config({ path: path.resolve(process.cwd(), '.env/.env') });
+dotenv.config();
 
 /**
  * Initializes Firebase Admin SDK using modern ESM modular imports:
