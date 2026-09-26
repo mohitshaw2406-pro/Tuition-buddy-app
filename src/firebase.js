@@ -4,7 +4,7 @@ import {
   signOut, onAuthStateChanged, sendPasswordResetEmail, getIdTokenResult
 } from "firebase/auth";
 import {
-  getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc,
+  getFirestore, doc, setDoc, getDoc, updateDoc,
   collection, getDocs, arrayUnion, serverTimestamp
 } from "firebase/firestore";
 
@@ -16,9 +16,6 @@ export const FIREBASE_CONFIG = {
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
   appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1234567890:web:abcdef123456"
 };
-
-export const ADMIN_EMAIL = "anime.aura.2406@gmail.com";
-export const ADMIN_PASSWORD = "animebuddy#2005";
 
 export const app = initializeApp(FIREBASE_CONFIG);
 export const auth = getAuth(app);
@@ -84,6 +81,19 @@ export const detectWeakTopicsFromChat = async (msgs) => {
   } catch { return []; }
 };
 
+// ─── ADMIN API HELPERS ────────────────────────────────────────────────────────
+const getAdminAuthHeaders = async () => {
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error("Admin session not found. Please log in.");
+  }
+  const token = await user.getIdToken();
+  return {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`
+  };
+};
+
 // ─── STUDENT CRUD ─────────────────────────────────────────────────────────────
 export const fetchAllStudents = async () => {
   const snap = await getDocs(collection(db, "students"));
@@ -91,23 +101,66 @@ export const fetchAllStudents = async () => {
 };
 
 export const addStudent = async (name, email, password, cls) => {
-  // Create auth user
-  const cred = await createUserWithEmailAndPassword(auth, email, password);
-  const studentData = {
-    name, class: cls, email,
-    streak: 0, lastStreakDate: "",
-    weakTopics: [], quizHistory: [],
-    totalQuestions: 0, totalQuizzes: 0,
-    createdAt: serverTimestamp(), lastActive: serverTimestamp()
-  };
-  await setDoc(doc(db, "students", cred.user.uid), studentData);
-  // Sign back in as admin (adding student signs you in as them temporarily)
-  await signInWithEmailAndPassword(auth, ADMIN_EMAIL, ADMIN_PASSWORD);
-  return { uid: cred.user.uid, ...studentData };
+  const headers = await getAdminAuthHeaders();
+  const res = await fetch("/api/admin/students", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      name,
+      email,
+      password,
+      class: cls,
+      approved: true
+    })
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to add student");
+  }
+  return data.student;
+};
+
+export const approveStudent = async (uid) => {
+  const headers = await getAdminAuthHeaders();
+  const res = await fetch(`/api/admin/students/${uid}/approve`, {
+    method: "PATCH",
+    headers
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to approve student");
+  }
+  return data;
+};
+
+export const rejectStudent = async (uid) => {
+  const headers = await getAdminAuthHeaders();
+  const res = await fetch(`/api/admin/students/${uid}/reject`, {
+    method: "DELETE",
+    headers
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to reject student");
+  }
+  return data;
 };
 
 export const removeStudent = async (uid) => {
-  await deleteDoc(doc(db, "students", uid));
+  const headers = await getAdminAuthHeaders();
+  const res = await fetch(`/api/admin/students/${uid}`, {
+    method: "DELETE",
+    headers
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to remove student");
+  }
+  return data;
 };
 
 export const editStudent = async (uid, name, cls) => {

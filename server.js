@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { initializeApp, getApps, cert, applicationDefault } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -131,6 +132,133 @@ export function createExpressApp() {
   // Health check endpoint
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  // POST /api/admin/students - Create new student Auth user & Firestore doc via Admin SDK
+  app.post('/api/admin/students', requireAdmin, async (req, res) => {
+    const { name, email, password, class: studentClass, approved } = req.body;
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+    if (!email || typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    const trimmedName = name.trim();
+    const assignedClass = studentClass ? String(studentClass).trim() : '9';
+    // Admin adding student directly sets approved to true unless explicitly false
+    const isApproved = approved !== undefined ? Boolean(approved) : true;
+
+    try {
+      const auth = getAuth();
+      const db = getFirestore();
+
+      const userRecord = await auth.createUser({
+        email: trimmedEmail,
+        password: password,
+        displayName: trimmedName,
+      });
+
+      const studentData = {
+        name: trimmedName,
+        class: assignedClass,
+        email: trimmedEmail,
+        approved: isApproved,
+        streak: 0,
+        lastStreakDate: '',
+        weakTopics: [],
+        quizHistory: [],
+        totalQuestions: 0,
+        totalQuizzes: 0,
+        createdAt: FieldValue.serverTimestamp(),
+        lastActive: FieldValue.serverTimestamp(),
+      };
+
+      await db.collection('students').doc(userRecord.uid).set(studentData);
+
+      // Return only safe student data (never passwords)
+      return res.status(201).json({
+        success: true,
+        student: {
+          uid: userRecord.uid,
+          name: trimmedName,
+          class: assignedClass,
+          email: trimmedEmail,
+          approved: isApproved,
+          streak: 0,
+          lastStreakDate: '',
+          weakTopics: [],
+          quizHistory: [],
+          totalQuestions: 0,
+          totalQuizzes: 0,
+        },
+      });
+    } catch (err) {
+      if (err.code === 'auth/email-already-exists' || err.message?.includes('already in use') || err.message?.includes('already exists')) {
+        return res.status(409).json({ error: 'Email already registered' });
+      }
+      console.error('[Admin] Error creating student:', err);
+      return res.status(500).json({ error: err.message || 'Failed to create student' });
+    }
+  });
+
+  // PATCH /api/admin/students/:uid/approve - Approve student via Admin SDK
+  app.patch('/api/admin/students/:uid/approve', requireAdmin, async (req, res) => {
+    const { uid } = req.params;
+    if (!uid) {
+      return res.status(400).json({ error: 'Student UID is required' });
+    }
+
+    try {
+      const db = getFirestore();
+      await db.collection('students').doc(uid).update({
+        approved: true,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return res.json({ success: true, uid, approved: true });
+    } catch (err) {
+      console.error('[Admin] Error approving student:', err);
+      return res.status(500).json({ error: err.message || 'Failed to approve student' });
+    }
+  });
+
+  // DELETE /api/admin/students/:uid/reject - Reject pending student via Admin SDK
+  app.delete('/api/admin/students/:uid/reject', requireAdmin, async (req, res) => {
+    const { uid } = req.params;
+    if (!uid) {
+      return res.status(400).json({ error: 'Student UID is required' });
+    }
+
+    try {
+      const db = getFirestore();
+      await db.collection('students').doc(uid).delete();
+      return res.json({ success: true, uid, rejected: true });
+    } catch (err) {
+      console.error('[Admin] Error rejecting student:', err);
+      return res.status(500).json({ error: err.message || 'Failed to reject student' });
+    }
+  });
+
+  // DELETE /api/admin/students/:uid - Delete student doc via Admin SDK
+  app.delete('/api/admin/students/:uid', requireAdmin, async (req, res) => {
+    const { uid } = req.params;
+    if (!uid) {
+      return res.status(400).json({ error: 'Student UID is required' });
+    }
+
+    try {
+      const db = getFirestore();
+      await db.collection('students').doc(uid).delete();
+      return res.json({ success: true, uid, deleted: true });
+    } catch (err) {
+      console.error('[Admin] Error removing student:', err);
+      return res.status(500).json({ error: err.message || 'Failed to remove student' });
+    }
   });
 
   // POST /api/chat - Server-side proxy for Groq API keeping GROQ_API_KEY secure

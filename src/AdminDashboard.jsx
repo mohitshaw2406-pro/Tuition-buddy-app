@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { CLASSES, fetchAllStudents, addStudent, removeStudent, editStudent, resetStudentPassword, broadcastMessage, db, doc, updateDoc } from "./firebase.js";
+import { CLASSES, fetchAllStudents, addStudent, removeStudent, approveStudent, rejectStudent, editStudent, resetStudentPassword, broadcastMessage } from "./firebase.js";
 import { C } from "./constants.js";
 import { Card, Badge, ScoreBar } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
@@ -123,7 +123,7 @@ export default function AdminDashboard({ onLogout }) {
   // ── APPROVE STUDENT ────────────────────────────────────────────────────────
   const handleApprove = async (uid) => {
     try {
-      await updateDoc(doc(db, "students", uid), { approved: true });
+      await approveStudent(uid);
       setStudents(prev => prev.map(s => s.uid === uid ? { ...s, approved: true } : s));
       showToast("✅ Student approved!");
     } catch (e) { showToast("❌ " + e.message); }
@@ -131,7 +131,7 @@ export default function AdminDashboard({ onLogout }) {
 
   const handleReject = async (uid) => {
     try {
-      await removeStudent(uid);
+      await rejectStudent(uid);
       setStudents(prev => prev.filter(s => s.uid !== uid));
       showToast("🗑️ Student rejected & removed.");
     } catch (e) { showToast("❌ " + e.message); }
@@ -144,12 +144,11 @@ export default function AdminDashboard({ onLogout }) {
     setAddLoading(true); setAddError("");
     try {
       const s = await addStudent(addName, addEmail, addPassword, addClass);
-      // Admin se add kiya = auto approved
-      await updateDoc(doc(db, "students", s.uid), { approved: true });
-      setStudents(p => [...p, { ...s, approved: true }]);
+      // Admin se add kiya = auto approved from backend
+      setStudents(p => [...p, s]);
       setShowAdd(false); setAddName(""); setAddEmail(""); setAddPassword(""); setAddClass("9");
       showToast("✅ Student add ho gaya!");
-    } catch (e) { setAddError(e.message.includes("email-already-in-use") ? "Email already registered." : e.message); }
+    } catch (e) { setAddError(e.message.includes("already") ? "Email already registered." : e.message); }
     setAddLoading(false);
   };
 
