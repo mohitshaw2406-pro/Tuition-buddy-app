@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.admin == true;
+    }
+
+    function isOwner(studentId) {
+      return isAuthenticated() && request.auth.uid == studentId;
+    }
+
+    match /students/{studentId} {
+      // ADMIN: Full read access (both get and list queries)
+      // STUDENT: Can get ONLY their own document; CANNOT list or query the entire collection
+      allow get: if isAdmin() || isOwner(studentId);
+      allow list: if isAdmin();
+
+      // STUDENT CREATION (Signup):
+      // - Must create ONLY their own document (request.auth.uid == studentId)
+      // - approved MUST be set to false (cannot self-approve)
+      // ADMIN CREATION:
+      // - Temporary compatibility for Admin Dashboard where existing app still requires it
+      allow create: if isAdmin() || (
+        isOwner(studentId)
+        && request.resource.data.approved == false
+      );
+
+      // UPDATES:
+      // ADMIN UPDATE:
+      // - Temporary compatibility for Admin Dashboard (edit student, broadcast message)
+      // STUDENT UPDATE:
+      // - Student may update ONLY their own document
+      // - Student MUST NOT change protected identity and permission fields:
+      //   'approved', 'class', 'email', 'uid', 'id'
+      // - Progress fields (quizHistory, totalQuestions, weakTopics, streak, lastStreakDate, lastActive, etc.) remain writable
+      allow update: if isAdmin() || (
+        isOwner(studentId)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'approved',
+          'class',
+          'email',
+          'uid',
+          'id'
+        ])
+      );
+
+      // DELETES:
+      // - ONLY Admin may delete student documents
+      // - Students CANNOT delete their own document
+      allow delete: if isAdmin();
+    }
+  }
+}
