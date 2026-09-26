@@ -114,11 +114,8 @@ export async function requireAdmin(req, res, next) {
   }
 }
 
-async function startServer() {
+export function createExpressApp() {
   const app = express();
-  const PORT = process.env.PORT || 3000;
-  const isProduction = process.env.NODE_ENV === 'production';
-
   app.use(cors());
   app.use(express.json());
 
@@ -136,6 +133,16 @@ async function startServer() {
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
+
+  return app;
+}
+
+export const app = createExpressApp();
+
+async function startServer() {
+  const app = createExpressApp();
+  const PORT = process.env.PORT || 3000;
+  const isProduction = process.env.NODE_ENV === 'production';
 
   if (!isProduction) {
     // Development mode: Mount Vite middleware
@@ -158,4 +165,8 @@ async function startServer() {
   });
 }
 
-startServer();
+// Only start the standalone HTTP listener if executed directly (e.g. `node server.js`), not in Vercel serverless environment
+const isDirectExecution = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isDirectExecution && process.env.VERCEL !== '1') {
+  startServer();
+}
