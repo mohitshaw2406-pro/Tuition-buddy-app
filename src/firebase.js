@@ -8,8 +8,6 @@ import {
   collection, getDocs, arrayUnion, serverTimestamp
 } from "firebase/firestore";
 
-const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
-
 export const FIREBASE_CONFIG = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "YOUR_API_KEY",
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "tuition-buddy.firebaseapp.com",
@@ -45,24 +43,30 @@ Always end with an encouraging phrase in Hinglish like "Tu kar sakta hai! 🌟" 
 
 
 export const callClaude = async (messages, system) => {
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${GROQ_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      max_tokens: 1500,
-      messages: [
-        { role: "system", content: system },
-        ...messages.map(m => ({ role: m.role, content: m.content }))
-      ]
-    }),
-  });
-  const data = await res.json();
-  console.log("Groq:", JSON.stringify(data).slice(0, 200));
-  return data.choices?.[0]?.message?.content || "Kuch problem ho gayi. Try again!";
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        messages: messages.map(m => ({ role: m.role, content: m.content })),
+        system: system,
+        max_tokens: 1500
+      }),
+    });
+
+    if (!res.ok) {
+      console.warn("AI chat endpoint returned non-OK status:", res.status);
+      return "Kuch problem ho gayi. Try again!";
+    }
+
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "Kuch problem ho gayi. Try again!";
+  } catch (err) {
+    console.error("AI chat request failed:", err);
+    return "Kuch problem ho gayi. Try again!";
+  }
 };
 
 

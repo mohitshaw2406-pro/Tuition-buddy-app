@@ -133,6 +133,81 @@ export function createExpressApp() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  // POST /api/chat - Server-side proxy for Groq API keeping GROQ_API_KEY secure
+  app.post('/api/chat', async (req, res) => {
+    const { messages, system, max_tokens } = req.body;
+
+    if (!Array.isArray(messages)) {
+      return res.status(400).json({ error: 'Invalid request: messages must be an array' });
+    }
+
+    if (system !== undefined && typeof system !== 'string') {
+      return res.status(400).json({ error: 'Invalid request: system must be a string if provided' });
+    }
+
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'AI service is temporarily unavailable' });
+    }
+
+    // Sanitize messages: only accept role and content strings
+    const sanitizedMessages = [];
+    if (system) {
+      sanitizedMessages.push({ role: 'system', content: String(system) });
+    }
+
+    for (const msg of messages) {
+      if (msg && typeof msg === 'object' && typeof msg.content === 'string') {
+        const role = msg.role === 'assistant' ? 'assistant' : msg.role === 'system' ? 'system' : 'user';
+        sanitizedMessages.push({ role, content: msg.content });
+      }
+    }
+
+    // Limit max_tokens to a sensible upper bound (default 1500, max 2048)
+    const tokenLimit = typeof max_tokens === 'number' && max_tokens > 0 ? Math.min(Math.floor(max_tokens), 2048) : 1500;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000); // 25s timeout
+
+    try {
+      const upstreamRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          max_tokens: tokenLimit,
+          messages: sanitizedMessages,
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!upstreamRes.ok) {
+        const status = upstreamRes.status;
+        if (status === 429) {
+          return res.status(429).json({ error: 'Rate limit exceeded. Please try again shortly.' });
+        }
+        if (status === 401 || status === 403) {
+          return res.status(502).json({ error: 'AI authentication error. Please contact administrator.' });
+        }
+        return res.status(502).json({ error: 'Upstream AI service error' });
+      }
+
+      const data = await upstreamRes.json();
+      return res.json(data);
+    } catch (err) {
+      clearTimeout(timeout);
+      if (err.name === 'AbortError') {
+        return res.status(504).json({ error: 'AI request timed out. Please try again.' });
+      }
+      return res.status(500).json({ error: 'Failed to process AI chat request' });
+    }
+  });
+
   return app;
 }
 
