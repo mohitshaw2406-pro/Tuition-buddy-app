@@ -7,41 +7,50 @@ import { getAuth } from 'firebase-admin/auth';
 dotenv.config({ path: path.resolve(process.cwd(), '.env/.env') });
 dotenv.config();
 
+// Explicitly read project ID from environment
+const resolvedProjectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+
 /**
  * Initializes Firebase Admin SDK using modern ESM modular imports:
  * 1. Checks getApps().length to avoid re-initialization
- * 2. Reads FIREBASE_SERVICE_ACCOUNT (raw JSON or base64-encoded JSON)
- * 3. Falls back to Google Application Default Credentials or project ID
+ * 2. Uses resolvedProjectId from VITE_FIREBASE_PROJECT_ID / FIREBASE_PROJECT_ID
+ * 3. Uses service account credentials if provided, otherwise applicationDefault() or direct projectId
  */
 function initAdmin() {
   if (!getApps().length) {
-    try {
-      const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
-      const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
+    const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const projectId = resolvedProjectId;
 
-      if (rawServiceAccount) {
-        let parsedCredentials;
-        try {
-          parsedCredentials = JSON.parse(rawServiceAccount);
-        } catch {
-          const decoded = Buffer.from(rawServiceAccount, 'base64').toString('utf8');
-          parsedCredentials = JSON.parse(decoded);
-        }
-        initializeApp({
-          credential: cert(parsedCredentials),
-          projectId: parsedCredentials.project_id || projectId,
-        });
-      } else {
-        initializeApp({
-          credential: applicationDefault(),
-          projectId: projectId || undefined,
-        });
+    if (rawServiceAccount) {
+      let parsedCredentials;
+      try {
+        parsedCredentials = JSON.parse(rawServiceAccount);
+      } catch {
+        const decoded = Buffer.from(rawServiceAccount, 'base64').toString('utf8');
+        parsedCredentials = JSON.parse(decoded);
       }
-    } catch {
-      if (!getApps().length) {
-        const fallbackProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
+      initializeApp({
+        credential: cert(parsedCredentials),
+        projectId: parsedCredentials.project_id || projectId,
+      });
+    } else {
+      let initialized = false;
+      try {
+        const appDefaultCred = applicationDefault();
+        if (appDefaultCred) {
+          initializeApp({
+            credential: appDefaultCred,
+            projectId: projectId || undefined,
+          });
+          initialized = true;
+        }
+      } catch {
+        // applicationDefault credentials not present in local environment
+      }
+
+      if (!initialized) {
         initializeApp({
-          projectId: fallbackProjectId || undefined,
+          projectId: projectId || undefined,
         });
       }
     }
