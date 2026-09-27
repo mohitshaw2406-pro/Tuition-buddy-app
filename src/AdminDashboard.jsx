@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { CLASSES, fetchAllStudents, addStudent, removeStudent, approveStudent, rejectStudent, editStudent, resetStudentPassword, broadcastMessage } from "./firebase.js";
+import { CBSE_CURRICULUM } from "./curriculum.js";
 import { C } from "./constants.js";
 import { Card, Badge, ScoreBar } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
@@ -80,6 +81,10 @@ export default function AdminDashboard({ onLogout }) {
   const [showEdit, setShowEdit] = useState(null);
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [showConfirmDelete, setShowConfirmDelete] = useState(null);
+
+  const [curriculumClass, setCurriculumClass] = useState("10");
+  const [curriculumSubject, setCurriculumSubject] = useState(null);
+  const [curriculumVariant, setCurriculumVariant] = useState(null);
 
   const [addName, setAddName] = useState(""); const [addEmail, setAddEmail] = useState("");
   const [addPassword, setAddPassword] = useState(""); const [addClass, setAddClass] = useState("9");
@@ -212,6 +217,7 @@ export default function AdminDashboard({ onLogout }) {
   const navItems = [
     { id: "overview", icon: "📊", label: "Overview" },
     { id: "students", icon: "👨‍🎓", label: "Students" },
+    { id: "curriculum", icon: "📖", label: "Curriculum" },
     { id: "pending", icon: "⏳", label: `Pending${pendingStudents.length > 0 ? ` (${pendingStudents.length})` : ""}` },
     { id: "leaderboard", icon: "🏆", label: "Leaderboard" },
   ];
@@ -566,6 +572,243 @@ export default function AdminDashboard({ onLogout }) {
                       </div>
                     ))}
                 </Card>
+              </div>
+            );
+          })()}
+
+          {/* CURRICULUM EXPLORER */}
+          {!loading && view === "curriculum" && (() => {
+            const currentClassData = CBSE_CURRICULUM[curriculumClass] || {};
+            const academicYear = "2026-27";
+
+            // Extract valid active subjects for the selected class (must have at least one course with chapters)
+            const availableSubjects = Object.keys(currentClassData).map(subj => {
+              const yearData = currentClassData[subj]?.[academicYear] || {};
+              const validVariants = Object.keys(yearData).filter(variantKey => {
+                const entry = yearData[variantKey];
+                return entry && Array.isArray(entry.chapters) && entry.chapters.length > 0;
+              }).map(variantKey => ({
+                key: variantKey,
+                label: variantKey === "default" ? "Standard" : variantKey === "standard" ? "Standard" : variantKey === "basic" ? "Basic" : variantKey === "applied" ? "Applied" : variantKey,
+                code: yearData[variantKey].code,
+                book: yearData[variantKey].book,
+                chapters: yearData[variantKey].chapters
+              }));
+              return { name: subj, variants: validVariants };
+            }).filter(s => s.variants.length > 0);
+
+            // Active subject and variant selection
+            const activeSubjectObj = availableSubjects.find(s => s.name === curriculumSubject) || availableSubjects[0] || null;
+            const activeVariantObj = activeSubjectObj
+              ? (activeSubjectObj.variants.find(v => v.key === curriculumVariant) || activeSubjectObj.variants[0] || null)
+              : null;
+
+            const chapters = activeVariantObj?.chapters || [];
+
+            return (
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", flexDirection: isMobile ? "column" : "row", gap: 10, marginBottom: 18 }}>
+                  <div>
+                    <h2 style={{ color: C.accent, fontSize: isMobile ? 18 : 22, margin: 0, fontWeight: 800 }}>📖 Curriculum Explorer</h2>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Complete CBSE 2026-27 Syllabus for Classes 6 to 12</div>
+                  </div>
+                  <Badge color={C.accent}>{availableSubjects.length} Active Subjects</Badge>
+                </div>
+
+                {/* CLASS SELECTOR */}
+                <Card style={{ marginBottom: 16, padding: "12px 16px" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Select Class</div>
+                  <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4 }}>
+                    {CLASSES.map(cls => {
+                      const isSel = curriculumClass === cls;
+                      return (
+                        <button
+                          key={cls}
+                          onClick={() => {
+                            setCurriculumClass(cls);
+                            setCurriculumSubject(null);
+                            setCurriculumVariant(null);
+                          }}
+                          style={{
+                            padding: "8px 16px",
+                            borderRadius: 10,
+                            border: `1px solid ${isSel ? C.accent : C.border}`,
+                            background: isSel ? `${C.accent}22` : C.dim,
+                            color: isSel ? C.accent : C.text,
+                            fontWeight: 700,
+                            fontSize: 13,
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                            fontFamily: "inherit",
+                            transition: "all 0.15s"
+                          }}
+                        >
+                          Class {cls}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Card>
+
+                {availableSubjects.length === 0 ? (
+                  <Card style={{ textAlign: "center", padding: 32, color: C.muted }}>
+                    Class {curriculumClass} ke liye koi active curriculum nahi mila.
+                  </Card>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "280px 1fr", gap: 16 }}>
+                    {/* SUBJECT LIST */}
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                        Subjects (Class {curriculumClass})
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {availableSubjects.map(subj => {
+                          const isSel = activeSubjectObj?.name === subj.name;
+                          return (
+                            <button
+                              key={subj.name}
+                              onClick={() => {
+                                setCurriculumSubject(subj.name);
+                                setCurriculumVariant(subj.variants[0]?.key || null);
+                              }}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                padding: "12px 14px",
+                                borderRadius: 10,
+                                border: `1px solid ${isSel ? C.accent : C.border}`,
+                                background: isSel ? `${C.accent}18` : C.card,
+                                color: isSel ? C.accent : C.text,
+                                cursor: "pointer",
+                                textAlign: "left",
+                                fontFamily: "inherit",
+                                fontWeight: isSel ? 700 : 500,
+                                fontSize: 13,
+                                transition: "all 0.12s"
+                              }}
+                            >
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{subj.name}</span>
+                              <span style={{ fontSize: 11, color: isSel ? C.accent : C.muted, background: isSel ? `${C.accent}22` : C.dim, padding: "2px 6px", borderRadius: 6, flexShrink: 0, marginLeft: 8 }}>
+                                {subj.variants[0]?.chapters.length || 0} {subj.variants[0]?.chapters[0]?.type === "unit" ? "units" : "chs"}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* CHAPTER / UNIT DETAILS */}
+                    <div>
+                      {activeSubjectObj && activeVariantObj ? (
+                        <Card style={{ padding: 18 }}>
+                          <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 14, marginBottom: 14 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
+                              <div>
+                                <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>
+                                  {activeSubjectObj.name}
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                                  {activeVariantObj.code && (
+                                    <Badge color={C.purple}>Code: {activeVariantObj.code}</Badge>
+                                  )}
+                                  {activeVariantObj.book && (
+                                    <span style={{ fontSize: 12, color: C.muted }}>
+                                      📚 Book: <strong style={{ color: C.text }}>{activeVariantObj.book}</strong>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <Badge color={C.green}>{chapters.length} {chapters[0]?.type === "unit" ? "Units" : "Chapters"}</Badge>
+                            </div>
+
+                            {/* COURSE VARIANTS (e.g. Standard vs Basic, Standard vs Applied, Course A vs Course B) */}
+                            {activeSubjectObj.variants.length > 1 && (
+                              <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px dashed ${C.border}` }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginRight: 8, textTransform: "uppercase" }}>Course Variant:</span>
+                                <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                                  {activeSubjectObj.variants.map(v => {
+                                    const isVarSel = activeVariantObj.key === v.key;
+                                    return (
+                                      <button
+                                        key={v.key}
+                                        onClick={() => setCurriculumVariant(v.key)}
+                                        style={{
+                                          padding: "4px 10px",
+                                          borderRadius: 8,
+                                          fontSize: 12,
+                                          fontWeight: 600,
+                                          border: `1px solid ${isVarSel ? C.purple : C.border}`,
+                                          background: isVarSel ? `${C.purple}22` : C.dim,
+                                          color: isVarSel ? C.purple : C.muted,
+                                          cursor: "pointer",
+                                          fontFamily: "inherit"
+                                        }}
+                                      >
+                                        {v.label} {v.code ? `(${v.code})` : ""}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* CHAPTER LIST */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "calc(100vh - 380px)", overflowY: "auto", paddingRight: 4 }}>
+                            {chapters.map((ch, idx) => (
+                              <div
+                                key={ch.num !== undefined ? `${ch.num}-${idx}` : idx}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 12,
+                                  padding: "10px 14px",
+                                  background: C.dim,
+                                  borderRadius: 8,
+                                  border: `1px solid ${C.border}33`
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    width: 32,
+                                    height: 32,
+                                    borderRadius: 8,
+                                    background: `${C.accent}22`,
+                                    color: C.accent,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    fontSize: 12,
+                                    fontWeight: 800,
+                                    flexShrink: 0
+                                  }}
+                                >
+                                  {ch.num !== undefined ? ch.num : idx + 1}
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+                                    {ch.name}
+                                  </div>
+                                  {(ch.book || ch.type) && (
+                                    <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                                      {ch.type === "unit" ? "Unit" : "Chapter"}
+                                      {ch.book && ch.book !== activeVariantObj.book ? ` • ${ch.book}` : ""}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </Card>
+                      ) : (
+                        <Card style={{ textAlign: "center", padding: 32, color: C.muted }}>
+                          Select a subject to view chapters.
+                        </Card>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })()}
