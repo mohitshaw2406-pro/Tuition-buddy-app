@@ -66,6 +66,59 @@ export const callClaude = async (messages, system) => {
   }
 };
 
+export const parseAIJson = (rawText) => {
+  if (typeof rawText !== "string") {
+    throw new Error("Invalid AI response: response is not a string");
+  }
+
+  let text = rawText.trim();
+
+  // 1. Strip markdown code fences if present (```json ... ``` or ``` ... ```)
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
+  const fenceMatch = text.match(fenceRegex);
+  if (fenceMatch && fenceMatch[1]) {
+    text = fenceMatch[1].trim();
+  }
+
+  // 2. Direct parse attempt
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Continue to substring extraction
+  }
+
+  // 3. Locate boundaries of JSON object {...} or array [...]
+  const firstBrace = text.indexOf("{");
+  const firstBracket = text.indexOf("[");
+
+  let startIdx = -1;
+  let endIdx = -1;
+
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    startIdx = firstBrace;
+    endIdx = text.lastIndexOf("}");
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+    endIdx = text.lastIndexOf("]");
+  }
+
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    const candidate = text.substring(startIdx, endIdx + 1).trim();
+    return JSON.parse(candidate);
+  }
+
+  // 4. If all attempts fail, throw standard parse error
+  throw new Error("No valid JSON found in AI response");
+};
+
+export const claudeJSON = async (prompt) => {
+  const reply = await callClaude(
+    [{ role: "user", content: prompt }],
+    "You are a CBSE/NCERT curriculum expert. Return only valid raw JSON. No markdown, no backticks, no explanation, no preamble."
+  );
+  return parseAIJson(reply);
+};
+
 
 export const detectWeakTopicsFromChat = async (msgs) => {
   if (msgs.length < 10) return []; // kam messages pe call mat karo

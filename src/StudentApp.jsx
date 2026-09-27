@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  SUBJECTS, SYSTEM_PROMPT, callClaude, detectWeakTopicsFromChat,
+  SUBJECTS, SYSTEM_PROMPT, callClaude, claudeJSON, detectWeakTopicsFromChat,
   saveQuizResult, saveDoubts, saveWeakTopics, updateStreak
 } from "./firebase.js";
+import { getChapters, CBSE_CURRICULUM } from "./curriculum.js";
 import { C } from "./constants.js";
 import { Card, ScoreBar } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
@@ -11,7 +12,10 @@ const SUBJECT_ICONS = {
   Mathematics:"📐", Physics:"⚡", Chemistry:"🧪", Biology:"🔬",
   Science:"🔭", "Social Science":"🌍", English:"📖", Hindi:"✍️",
   Sanskrit:"🕉️", Accountancy:"📊", "Business Studies":"💼", Economics:"📈",
-  History:"🏛️", Geography:"🗺️", "Political Science":"⚖️", default:"📚",
+  History:"🏛️", Geography:"🗺️", "Political Science":"⚖️",
+  "Computer Science":"💻", "Artificial Intelligence":"🤖",
+  Sociology:"👥", Psychology:"🧠", "Legal Studies":"📜", "Physical Education":"🏃",
+  default:"📚",
 };
 
 const SUBJECT_COLORS = {
@@ -19,19 +23,14 @@ const SUBJECT_COLORS = {
   Biology:"#22C55E", Science:"#10B981", "Social Science":"#F97316",
   English:"#3B82F6", Hindi:"#A855F7", Sanskrit:"#F59E0B",
   Accountancy:"#0EA5E9", "Business Studies":"#F43F5E", Economics:"#16A34A",
+  History:"#E11D48", Geography:"#0D9488", "Political Science":"#7C3AED",
+  "Computer Science":"#0284C7", "Artificial Intelligence":"#8B5CF6",
+  Sociology:"#D97706", Psychology:"#EC4899", "Legal Studies":"#475569", "Physical Education":"#10B981",
   default:"#6366F1",
 };
 
 const getColor = (subject) => SUBJECT_COLORS[subject] || SUBJECT_COLORS.default;
 const getIcon  = (subject) => SUBJECT_ICONS[subject]  || SUBJECT_ICONS.default;
-
-async function claudeJSON(prompt) {
-  const reply = await callClaude(
-    [{ role: "user", content: prompt }],
-    "You are a CBSE/NCERT curriculum expert. Return only valid raw JSON. No markdown, no backticks, no explanation, no preamble."
-  );
-  return JSON.parse(reply.replace(/```json|```/g, "").trim());
-}
 
 export default function StudentApp({ user, onLogout }) {
   const isMobile = useIsMobile();
@@ -77,11 +76,16 @@ export default function StudentApp({ user, onLogout }) {
   }, [isDemo, user.uid]);
 
   const getSubjectsForClass = () => {
-    const cls = parseInt(user.class);
-    if (cls >= 6 && cls <= 8)  return ["Mathematics","Science","Social Science","English","Hindi","Sanskrit"];
-    if (cls === 9 || cls === 10) return ["Mathematics","Science","Social Science","English","Hindi","Sanskrit"];
-    if (cls === 11 || cls === 12) return ["Mathematics","Physics","Chemistry","Biology","Accountancy","Business Studies","Economics","English","Hindi"];
-    return SUBJECTS;
+    const classData = CBSE_CURRICULUM[String(user.class)];
+    if (!classData) return SUBJECTS;
+
+    return Object.entries(classData)
+      .filter(([, yearMap]) => {
+        const yearData = yearMap["2026-27"];
+        if (!yearData) return false;
+        return Object.values(yearData).some(course => Array.isArray(course.chapters) && course.chapters.length > 0);
+      })
+      .map(([subject]) => subject);
   };
   const classSubjects = getSubjectsForClass();
 
@@ -90,17 +94,7 @@ export default function StudentApp({ user, onLogout }) {
     setChapters([]);
     setQuizError(null);
     try {
-      const result = await claudeJSON(
-        `You are a CBSE curriculum expert. List ONLY the chapters present in the LATEST NCERT 2024-25 rationalized textbook for "${subject}" Class ${user.class}.
-
-Important rules:
-- Use the REDUCED/RATIONALIZED syllabus (many chapters were removed in 2022-23 and further updated in 2024-25)
-- Do NOT include deleted or dropped chapters
-- For Class 6, use the NEW NEP 2020 based textbooks (Ganita Prakash for Maths, Curiosity for Science, etc.)
-- Return ONLY a JSON array: [{"num":1,"name":"Chapter Name"}, ...]
-- Chapter numbers should match actual NCERT book chapter numbers
-- No extra text, no explanation`,
-      );
+      const result = getChapters(user.class, subject);
       if (Array.isArray(result) && result.length > 0) {
         setChapters(result);
       } else {
@@ -142,16 +136,18 @@ Important rules:
     setAnswered(false);
     setLiveScore(0);
 
-    const topicDesc = quizMode === "full"
-      ? `all chapters of ${quizSubject} for Class ${user.class} NCERT 2024-25`
-      : `Chapter ${selectedChapter.num}: "${selectedChapter.name}" from ${quizSubject}, Class ${user.class} NCERT 2024-25`;
+    const chapterScope = quizMode === "full"
+      ? (chapters.length > 0
+          ? `the complete CBSE 2026-27 curriculum for ${quizSubject} (Class ${user.class}) covering the following chapters:\n${chapters.map(c => `- Chapter ${c.num}: "${c.name}"`).join("\n")}`
+          : `the complete CBSE 2026-27 curriculum for ${quizSubject} (Class ${user.class})`)
+      : `Chapter ${selectedChapter.num}: "${selectedChapter.name}" from CBSE 2026-27 ${quizSubject} (Class ${user.class})`;
 
     try {
       const questions = await claudeJSON(
-        `Generate exactly ${numQuestions} MCQ questions for ${topicDesc}.
+        `Generate exactly ${numQuestions} MCQ questions based strictly on ${chapterScope}.
 Difficulty: ${difficulty} (easy=basic recall, medium=concept understanding, hard=application/analysis).
 Rules:
-- Strictly follow the RATIONALIZED NCERT 2024-25 syllabus only. Do NOT include content from dropped/deleted chapters.
+- Strictly test topics within the specified chapter scope.
 - Each question has exactly 4 options
 - Write all questions and options in ENGLISH only, EXCEPT for Hindi and Sanskrit subjects where use Hindi/Sanskrit
 - CBSE board exam style
@@ -238,24 +234,49 @@ Return ONLY a raw JSON array:
     setMessages(newMsgs);
     setLoading(true);
     try {
+      let contextNote = `Student is in Class ${user.class}.`;
+      if (quizSubject) {
+        contextNote += ` Current subject focus: ${quizSubject}.`;
+      }
+      if (selectedChapter) {
+        contextNote += ` Current chapter focus: Chapter ${selectedChapter.num} ("${selectedChapter.name}").`;
+      }
+
       const sys = mode === "homework"
-        ? `You are a homework helper. Guide the Class ${user.class} student step by step WITHOUT giving direct answers. Use leading questions. Hinglish/English supported. End with encouragement.`
-        : SYSTEM_PROMPT(user.class);
+        ? `You are a homework helper. Guide the Class ${user.class} student step by step WITHOUT giving direct answers. Use leading questions. Hinglish/English supported. End with encouragement.\n\nContext: ${contextNote}`
+        : `${SYSTEM_PROMPT(user.class)}\n\nContext: ${contextNote}\nIf the student asks a question related to this subject/chapter, keep your explanation tailored to it. If they ask a general doubt or a question from a different subject, answer it warmly and helpfully without forcing the chapter context.`;
+
       const reply = await callClaude(newMsgs.map(m => ({ role: m.role, content: m.content })), sys);
-      const finalMsgs = [...newMsgs, { role: "assistant", content: reply }];
+
+      // Check if callClaude returned default fallback error string
+      const isKnownErrorReply = typeof reply === "string" && (
+        reply.includes("Kuch problem ho gayi") ||
+        reply.includes("Oops! Connection mein problem")
+      );
+
+      const finalReply = isKnownErrorReply
+        ? "Abhi server se connect karne mein pareshani ho rahi hai. Kripya apna internet check karein aur thodi der mein dobara try karein! 🙏"
+        : reply;
+
+      const finalMsgs = [...newMsgs, { role: "assistant", content: finalReply }];
       setMessages(finalMsgs);
-      setTotalQ(prev => prev + 1);
-      if (!isDemo) saveDoubts(user.uid, 1);
-      if (finalMsgs.length >= 10 && finalMsgs.length % 10 === 0) {
-        const topics = await detectWeakTopicsFromChat(finalMsgs);
-        if (topics.length) {
-          const merged = [...new Set([...weakTopics, ...topics])].slice(0, 5);
-          setWeakTopics(merged);
-          if (!isDemo) saveWeakTopics(user.uid, topics);
+      if (!isKnownErrorReply) {
+        setTotalQ(prev => prev + 1);
+        if (!isDemo) saveDoubts(user.uid, 1);
+        if (finalMsgs.length >= 10 && finalMsgs.length % 10 === 0) {
+          const topics = await detectWeakTopicsFromChat(finalMsgs);
+          if (topics.length) {
+            const merged = [...new Set([...weakTopics, ...topics])].slice(0, 5);
+            setWeakTopics(merged);
+            if (!isDemo) saveWeakTopics(user.uid, topics);
+          }
         }
       }
     } catch {
-      setMessages(m => [...m, { role: "assistant", content: "Oops! Connection mein problem hai. Try kar! 🙏" }]);
+      setMessages(m => [...m, {
+        role: "assistant",
+        content: "Oops! Network ya server connection mein dikkat aayi. Kripya thodi der baad dobara try karein! 🙏"
+      }]);
     }
     setLoading(false);
   };
@@ -418,7 +439,7 @@ Return ONLY a raw JSON array:
           {chaptersLoading && (
             <div style={{ textAlign: "center", padding: "30px 0", color: C.muted }}>
               <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
-              <div style={{ fontSize: 13 }}>AI se chapters fetch ho rahe hain...</div>
+              <div style={{ fontSize: 13 }}>Chapters load ho rahe hain...</div>
             </div>
           )}
 
