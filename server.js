@@ -294,39 +294,109 @@ export function createExpressApp() {
     // Limit max_tokens to a sensible upper bound (default 1500, max 2048)
     const tokenLimit = typeof max_tokens === 'number' && max_tokens > 0 ? Math.min(Math.floor(max_tokens), 2048) : 1500;
 
+    const APPROVED_TUTOR_MODELS = [
+      'openai/gpt-oss-120b',
+      'openai/gpt-oss-20b',
+    ];
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000); // 25s timeout
+    const timeout = setTimeout(() => controller.abort(), 25000); // 25s overall timeout
 
     try {
-      const upstreamRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'openai/gpt-oss-120b',
-          max_tokens: tokenLimit,
-          messages: sanitizedMessages,
-        }),
-        signal: controller.signal,
-      });
+      let lastStatus = 500;
+      let lastErrorData = null;
+
+      for (let i = 0; i < APPROVED_TUTOR_MODELS.length; i++) {
+        const model = APPROVED_TUTOR_MODELS[i];
+
+        try {
+          const upstreamRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: tokenLimit,
+              messages: sanitizedMessages,
+            }),
+            signal: controller.signal,
+          });
+
+          if (upstreamRes.ok) {
+            clearTimeout(timeout);
+            const data = await upstreamRes.json();
+            return res.json(data);
+          }
+
+          const status = upstreamRes.status;
+          lastStatus = status;
+
+          // Safe server-side error message capture without logging credentials or user content
+          let errSnippet = '';
+          try {
+            const errBody = await upstreamRes.text();
+            try {
+              const parsed = JSON.parse(errBody);
+              errSnippet = parsed?.error?.message || errBody.slice(0, 150);
+            } catch {
+              errSnippet = errBody.slice(0, 150);
+            }
+          } catch {
+            errSnippet = 'unable to read error body';
+          }
+          lastErrorData = errSnippet;
+
+          console.warn(`[AI Upstream Error] model=${model} status=${status} message="${errSnippet.replace(/[\r\n]+/g, ' ')}"`);
+
+          // Fast-fail: 401 invalid API key should not fallback
+          if (status === 401) {
+            clearTimeout(timeout);
+            return res.status(502).json({ error: 'AI authentication error. Please contact administrator.' });
+          }
+
+          // Fast-fail: Rate limit (429)
+          if (status === 429) {
+            clearTimeout(timeout);
+            return res.status(429).json({ error: 'Rate limit exceeded. Please try again shortly.' });
+          }
+
+          // Evaluate fallback condition
+          const isModelNotFound = status === 404;
+          const isServerUnavailable = status === 500 || status === 502 || status === 503;
+          const isModelCapabilityRestriction = status === 403;
+          const isModelSpecific400 = status === 400 && (
+            /model_not_found|decommissioned|unavailable|model/i.test(errSnippet)
+          );
+
+          const shouldFallback = isModelNotFound || isServerUnavailable || isModelCapabilityRestriction || isModelSpecific400;
+
+          if (shouldFallback && i < APPROVED_TUTOR_MODELS.length - 1) {
+            console.log(`[AI Fallback] Attempting fallback model ${APPROVED_TUTOR_MODELS[i + 1]}`);
+            continue;
+          }
+
+          // If not eligible for fallback or no more models, break loop and return response
+          break;
+        } catch (fetchErr) {
+          if (fetchErr.name === 'AbortError') {
+            throw fetchErr;
+          }
+          console.warn(`[AI Fetch Error] model=${model} err=${fetchErr.message}`);
+          if (i < APPROVED_TUTOR_MODELS.length - 1) {
+            continue;
+          }
+          break;
+        }
+      }
 
       clearTimeout(timeout);
 
-      if (!upstreamRes.ok) {
-        const status = upstreamRes.status;
-        if (status === 429) {
-          return res.status(429).json({ error: 'Rate limit exceeded. Please try again shortly.' });
-        }
-        if (status === 401 || status === 403) {
-          return res.status(502).json({ error: 'AI authentication error. Please contact administrator.' });
-        }
-        return res.status(502).json({ error: 'Upstream AI service error' });
+      if (lastStatus === 403) {
+        return res.status(502).json({ error: 'AI authentication error. Please contact administrator.' });
       }
-
-      const data = await upstreamRes.json();
-      return res.json(data);
+      return res.status(502).json({ error: 'Upstream AI service error' });
     } catch (err) {
       clearTimeout(timeout);
       if (err.name === 'AbortError') {

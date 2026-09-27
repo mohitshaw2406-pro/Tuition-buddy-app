@@ -31,15 +31,10 @@ You support Hinglish and English. If the student writes in Hinglish, respond in 
 Tailor your explanations for a Class ${cls} student's knowledge level.
 For doubts: explain clearly with examples and step-by-step breakdowns suitable for Class ${cls}.
 For homework: guide without giving direct answers — use Socratic questions.
-For quizzes: generate exactly 5 MCQ questions formatted as:
-Q1. [question]
-A) [opt]  B) [opt]  C) [opt]  D) [opt]
-Answer: [letter]
-Explanation: [brief]
 Always end with an encouraging phrase in Hinglish like "Tu kar sakta hai! 🌟" or "Bahut badhiya! 💪"`;
 
 
-export const callClaude = async (messages, system) => {
+export const callClaude = async (messages, system, maxTokens = 1200) => {
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -49,7 +44,7 @@ export const callClaude = async (messages, system) => {
       body: JSON.stringify({
         messages: messages.map(m => ({ role: m.role, content: m.content })),
         system: system,
-        max_tokens: 1500
+        max_tokens: typeof maxTokens === "number" && maxTokens > 0 ? maxTokens : 1200
       }),
     });
 
@@ -111,10 +106,15 @@ export const parseAIJson = (rawText) => {
   throw new Error("No valid JSON found in AI response");
 };
 
-export const claudeJSON = async (prompt) => {
+export const claudeJSON = async (prompt, systemPrompt, maxTokens = 2048) => {
+  const customSystem = typeof systemPrompt === "string" && systemPrompt.trim().length > 0
+    ? systemPrompt
+    : "You are a CBSE/NCERT curriculum expert. Return only valid raw JSON. No markdown, no backticks, no explanation, no preamble.";
+
   const reply = await callClaude(
     [{ role: "user", content: prompt }],
-    "You are a CBSE/NCERT curriculum expert. Return only valid raw JSON. No markdown, no backticks, no explanation, no preamble."
+    customSystem,
+    maxTokens
   );
   return parseAIJson(reply);
 };
@@ -127,7 +127,8 @@ export const detectWeakTopicsFromChat = async (msgs) => {
     await new Promise(r => setTimeout(r, 2000)); // 2 sec delay
     const res = await callClaude(
       [{ role: "user", content: history }],
-      `Identify up to 2 topics the student struggled with. Return ONLY a JSON array like ["Topic1","Topic2"]. If none, return []. No other text.`
+      `Identify up to 2 topics the student struggled with. Return ONLY a JSON array like ["Topic1","Topic2"]. If none, return []. No other text.`,
+      300
     );
     const parsed = JSON.parse(res.trim());
     return Array.isArray(parsed) ? parsed.slice(0, 2) : [];
