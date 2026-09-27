@@ -5,7 +5,7 @@ import {
 } from "./firebase.js";
 import { getChapters, CBSE_CURRICULUM } from "./curriculum.js";
 import { C } from "./constants.js";
-import { Card, ScoreBar } from "./ui.jsx";
+import { Card, ScoreBar, Badge, Btn } from "./ui.jsx";
 import useIsMobile from "./useIsMobile.js";
 
 const SUBJECT_ICONS = {
@@ -34,21 +34,28 @@ const getIcon  = (subject) => SUBJECT_ICONS[subject]  || SUBJECT_ICONS.default;
 
 export default function StudentApp({ user, onLogout }) {
   const isMobile = useIsMobile();
-  const [view, setView] = useState("chat");
+  const [view, setView] = useState("home");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [messages, setMessages] = useState([{
+
+  const getWelcomeMessage = () => ({
     role: "assistant",
     content: `Namaste ${user.name}! 👋 Main hoon tera Tuition Buddy!\nTu Class ${user.class} mein hai — toh main tumhare level ke hisaab se help karunga! 📚\nAsk me anything — doubt, homework help, ya quiz lena hai toh bol do! 🌟`
-  }]);
+  });
+
+  const [messages, setMessages] = useState([getWelcomeMessage()]);
+  const [copiedIndex, setCopiedIndex] = useState(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const chatGenIdRef = useRef(0);
   const [streak, setStreak] = useState(user.streak || 1);
   const [weakTopics, setWeakTopics] = useState(user.weakTopics || []);
 
   const [quizStep, setQuizStep] = useState("subject"); 
   const [quizSubject, setQuizSubject] = useState(null);
+  const [quizCourse, setQuizCourse] = useState(null);
   const [chapters, setChapters] = useState([]);        
   const [chaptersLoading, setChaptersLoading] = useState(false);
+  const [chapterSearch, setChapterSearch] = useState("");
   const [selectedChapter, setSelectedChapter] = useState(null); 
   const [quizMode, setQuizMode] = useState("chapter");
   const [numQuestions, setNumQuestions] = useState(10);
@@ -57,12 +64,14 @@ export default function StudentApp({ user, onLogout }) {
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizLoading, setQuizLoading] = useState(false);
   const [quizError, setQuizError] = useState(null);
+  const quizGenIdRef = useRef(0);
   const [currentQIndex, setCurrentQIndex] = useState(0);
   const [answered, setAnswered] = useState(false);
   const [liveScore, setLiveScore] = useState(0);
 
   const [mode, setMode] = useState("chat");
   const [quizHistory, setQuizHistory] = useState(user.quizHistory || []);
+  const [showAllHistory, setShowAllHistory] = useState(false);
   const [totalQ, setTotalQ] = useState(user.totalQuestions || 0);
   const [listening, setListening] = useState(false);
   const bottomRef = useRef(null);
@@ -89,12 +98,27 @@ export default function StudentApp({ user, onLogout }) {
   };
   const classSubjects = getSubjectsForClass();
 
-  const fetchChapters = async (subject) => {
+  const getSubjectVariants = (subject) => {
+    if (!subject) return [];
+    const classData = CBSE_CURRICULUM[String(user.class)];
+    const yearData = classData?.[subject]?.["2026-27"] || {};
+    return Object.keys(yearData)
+      .filter(k => Array.isArray(yearData[k]?.chapters) && yearData[k].chapters.length > 0)
+      .map(k => ({
+        key: k,
+        label: k === "default" ? "Standard" : k === "standard" ? "Standard" : k === "basic" ? "Basic" : k === "applied" ? "Applied" : k,
+        code: yearData[k].code || null,
+        book: yearData[k].book || null,
+        chaptersCount: yearData[k].chapters.length
+      }));
+  };
+
+  const fetchChapters = async (subject, course) => {
     setChaptersLoading(true);
     setChapters([]);
     setQuizError(null);
     try {
-      const result = getChapters(user.class, subject);
+      const result = getChapters(user.class, subject, course ? { course } : {});
       if (Array.isArray(result) && result.length > 0) {
         setChapters(result);
       } else {
@@ -109,9 +133,21 @@ export default function StudentApp({ user, onLogout }) {
   const handleSubjectSelect = (subject) => {
     setQuizSubject(subject);
     setSelectedChapter(null);
+    setChapterSearch("");
     setQuizMode("chapter");
     setQuizStep("chapter");
-    fetchChapters(subject);
+    const variants = getSubjectVariants(subject);
+    const initialCourse = variants.length > 0 ? variants[0].key : null;
+    setQuizCourse(initialCourse);
+    fetchChapters(subject, initialCourse);
+  };
+
+  const handleCourseSelect = (courseKey) => {
+    if (courseKey === quizCourse) return;
+    setQuizCourse(courseKey);
+    setSelectedChapter(null);
+    setChapterSearch("");
+    fetchChapters(quizSubject, courseKey);
   };
 
   const handleChapterSelect = (ch) => {
@@ -128,6 +164,9 @@ export default function StudentApp({ user, onLogout }) {
 
   // ── STEP 2: Generate quiz questions via AI ───────────────────────────────────
   const generateQuiz = async () => {
+    quizGenIdRef.current += 1;
+    const currentGenId = quizGenIdRef.current;
+
     setQuizLoading(true);
     setQuizError(null);
     setQuizQuestions([]);
@@ -157,13 +196,21 @@ Return ONLY a raw JSON array:
 "correct" = 0-indexed position of correct answer. No extra text.`,
         "You are a CBSE exam expert. Return only valid raw JSON. No markdown, no backticks, no preamble."
       );
+      // Only apply if this generation is still current and has not been cancelled/invalidated
+      if (quizGenIdRef.current !== currentGenId) return;
+
       if (!Array.isArray(questions) || questions.length === 0) throw new Error("empty");
       setQuizQuestions(questions);
       setQuizStep("quiz");
     } catch {
-      setQuizError("Questions generate nahi hue. Dobara try karo!");
+      if (quizGenIdRef.current === currentGenId) {
+        setQuizError("Questions generate nahi hue. Dobara try karo!");
+      }
+    } finally {
+      if (quizGenIdRef.current === currentGenId) {
+        setQuizLoading(false);
+      }
     }
-    setQuizLoading(false);
   };
 
   // ── STEP 3: Handle answer selection (one-by-one mode) ───────────────────────
@@ -193,7 +240,7 @@ Return ONLY a raw JSON array:
 
     const subjectLabel = quizMode === "full"
       ? quizSubject
-      : `${quizSubject} Ch.${selectedChapter.num}`;
+      : `${quizSubject} Ch.${selectedChapter?.num || ""}`;
     const entry = { subject: subjectLabel, score: liveScore, total, pct, date: new Date().toISOString() };
     setQuizHistory(h => [entry, ...h]);
 
@@ -203,18 +250,15 @@ Return ONLY a raw JSON array:
       setWeakTopics(merged);
       if (!isDemo) saveWeakTopics(user.uid, [quizSubject]);
     }
-    setView("chat");
-    setMessages(m => [...m, {
-      role: "assistant",
-      content: `Quiz result: ${liveScore}/${total} on ${subjectLabel} (${pct}%). ${pct >= 80 ? "Ekdum zabardast! 🔥" : pct >= 60 ? "Achha hua! Thoda aur practice kar 💪" : "Koi baat nahi, practice se sab aata hai! Weak areas pe dhyan do 📖"}`
-    }]);
   };
 
   // ── Reset quiz state ─────────────────────────────────────────────────────────
   const resetQuiz = () => {
     setQuizStep("subject");
     setQuizSubject(null);
+    setQuizCourse(null);
     setChapters([]);
+    setChapterSearch("");
     setSelectedChapter(null);
     setQuizQuestions([]);
     setQuizAnswers({});
@@ -225,12 +269,22 @@ Return ONLY a raw JSON array:
   };
 
   // ── CHAT SEND ────────────────────────────────────────────────────────────────
-  const send = async (text) => {
+  const send = async (text, isRetry = false) => {
     const msg = text || input.trim();
     if (!msg || loading) return;
-    setInput("");
+    if (!isRetry) setInput("");
     if (isMobile) setSidebarOpen(false);
-    const newMsgs = [...messages, { role: "user", content: msg }];
+
+    chatGenIdRef.current += 1;
+    const currentChatGenId = chatGenIdRef.current;
+
+    // If retrying, remove the trailing failed assistant error message if present so it replaces cleanly
+    let baseMsgs = messages;
+    if (isRetry && messages.length > 0 && messages[messages.length - 1].error) {
+      baseMsgs = messages.slice(0, -1);
+    }
+
+    const newMsgs = isRetry ? baseMsgs : [...baseMsgs, { role: "user", content: msg }];
     setMessages(newMsgs);
     setLoading(true);
     try {
@@ -248,24 +302,25 @@ Return ONLY a raw JSON array:
 
       const reply = await callClaude(newMsgs.map(m => ({ role: m.role, content: m.content })), sys);
 
+      if (chatGenIdRef.current !== currentChatGenId) return;
+
       // Check if callClaude returned default fallback error string
       const isKnownErrorReply = typeof reply === "string" && (
         reply.includes("Kuch problem ho gayi") ||
         reply.includes("Oops! Connection mein problem")
       );
 
-      const finalReply = isKnownErrorReply
-        ? "Abhi server se connect karne mein pareshani ho rahi hai. Kripya apna internet check karein aur thodi der mein dobara try karein! 🙏"
-        : reply;
-
-      const finalMsgs = [...newMsgs, { role: "assistant", content: finalReply }];
-      setMessages(finalMsgs);
-      if (!isKnownErrorReply) {
+      if (isKnownErrorReply) {
+        const errorReply = "Abhi server se connect karne mein pareshani ho rahi hai. Kripya apna internet check karein aur thodi der mein dobara try karein! 🙏";
+        setMessages([...newMsgs, { role: "assistant", content: errorReply, error: true, retryMsg: msg }]);
+      } else {
+        const finalMsgs = [...newMsgs, { role: "assistant", content: reply }];
+        setMessages(finalMsgs);
         setTotalQ(prev => prev + 1);
         if (!isDemo) saveDoubts(user.uid, 1);
         if (finalMsgs.length >= 10 && finalMsgs.length % 10 === 0) {
           const topics = await detectWeakTopicsFromChat(finalMsgs);
-          if (topics.length) {
+          if (topics.length && chatGenIdRef.current === currentChatGenId) {
             const merged = [...new Set([...weakTopics, ...topics])].slice(0, 5);
             setWeakTopics(merged);
             if (!isDemo) saveWeakTopics(user.uid, topics);
@@ -273,12 +328,59 @@ Return ONLY a raw JSON array:
         }
       }
     } catch {
-      setMessages(m => [...m, {
-        role: "assistant",
-        content: "Oops! Network ya server connection mein dikkat aayi. Kripya thodi der baad dobara try karein! 🙏"
-      }]);
+      if (chatGenIdRef.current === currentChatGenId) {
+        setMessages([...newMsgs, {
+          role: "assistant",
+          content: "Oops! Network ya server connection mein dikkat aayi. Kripya thodi der baad dobara try karein! 🙏",
+          error: true,
+          retryMsg: msg
+        }]);
+      }
+    } finally {
+      if (chatGenIdRef.current === currentChatGenId) {
+        setLoading(false);
+      }
     }
+  };
+
+  const handleNewChat = () => {
+    if (loading) return;
+    if (messages.length > 2) {
+      const ok = window.confirm("Nayi chat shuru karni hai? Purane messages clear ho jayenge.");
+      if (!ok) return;
+    }
+    chatGenIdRef.current += 1;
+    setMessages([getWelcomeMessage()]);
+    setInput("");
     setLoading(false);
+    setQuizSubject(null);
+    setSelectedChapter(null);
+    setQuizCourse(null);
+  };
+
+  const copyMessage = async (text, index) => {
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand("copy");
+        textArea.remove();
+      }
+      setCopiedIndex(index);
+      setTimeout(() => {
+        setCopiedIndex((prev) => (prev === index ? null : prev));
+      }, 2000);
+    } catch (e) {
+      console.warn("Clipboard copy failed:", e);
+    }
   };
 
   const startVoice = () => {
@@ -292,7 +394,21 @@ Return ONLY a raw JSON array:
   };
 
   const avgScore = quizHistory.length ? Math.round(quizHistory.reduce((a, q) => a + q.pct, 0) / quizHistory.length) : 0;
-  const navItems = [{ id: "chat", icon: "💬", label: "Chat" }, { id: "quiz", icon: "🧠", label: "Quiz" }, { id: "progress", icon: "📊", label: "Progress" }];
+
+  const goToChatWithPrompt = (promptText) => {
+    setQuizSubject(null);
+    setSelectedChapter(null);
+    setQuizCourse(null);
+    setView("chat");
+    send(promptText);
+  };
+
+  const navItems = [
+    { id: "home", icon: "🏠", label: "Home" },
+    { id: "chat", icon: "💬", label: "Chat" },
+    { id: "quiz", icon: "🧠", label: "Quiz" },
+    { id: "progress", icon: "📊", label: "Progress" }
+  ];
   const quickPrompts = [
     { l: "📐 Maths doubt", m: "Explain quadratic equations with examples for my level" },
     { l: "⚗️ Science", m: "Photosynthesis kya hota hai? Step by step explain karo" },
@@ -314,7 +430,16 @@ Return ONLY a raw JSON array:
 
       <div style={{ padding: "12px 10px", flex: 1, overflowY: "auto" }}>
         {navItems.map(n => (
-          <button key={n.id} onClick={() => { setView(n.id); if (n.id === "quiz") resetQuiz(); setSidebarOpen(false); }} style={{
+          <button key={n.id} onClick={() => {
+            setView(n.id);
+            if (n.id === "quiz") resetQuiz();
+            if (n.id === "chat" || n.id === "home") {
+              setQuizSubject(null);
+              setSelectedChapter(null);
+              setQuizCourse(null);
+            }
+            setSidebarOpen(false);
+          }} style={{
             display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", marginBottom: 4,
             background: view === n.id ? `linear-gradient(135deg,${C.accent}22,${C.accentSoft || "#4f46e5"}22)` : "transparent",
             border: view === n.id ? `1px solid ${C.accent}44` : "1px solid transparent",
@@ -391,23 +516,159 @@ Return ONLY a raw JSON array:
     );
 
     // ── Step: Chapter selection ──────────────────────────────────────────────
-    if (quizStep === "chapter") return (
+    if (quizStep === "chapter") {
+      const variants = getSubjectVariants(quizSubject);
+      const activeVariant = variants.find(v => v.key === quizCourse) || (variants.length > 0 ? variants[0] : null);
+      
+      // Dynamic context line: e.g. "Class 10 • Mathematics • Standard (041)" or "Class 11 • History • 027"
+      const contextParts = [`Class ${user.class}`, quizSubject];
+      if (activeVariant) {
+        if (variants.length > 1) {
+          contextParts.push(activeVariant.code ? `${activeVariant.label} (${activeVariant.code})` : activeVariant.label);
+        } else if (activeVariant.code) {
+          contextParts.push(activeVariant.code);
+        }
+      }
+      const contextString = contextParts.join(" • ");
+
+      return (
       <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 20px" }}>
         <div style={{ maxWidth: 600, margin: "0 auto" }}>
           {/* Header */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-            <button onClick={() => setQuizStep("subject")} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, color: C.muted, padding: "4px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>← Back</button>
-            <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <button onClick={() => { setQuizStep("subject"); setSelectedChapter(null); setQuizCourse(null); setChapterSearch(""); }} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, color: C.muted, padding: "4px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>← Back</button>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <h2 style={{ color, fontSize: 17, margin: 0, fontWeight: 800 }}>{icon} {quizSubject}</h2>
               <p style={{ color: C.muted, fontSize: 12, margin: 0 }}>Class {user.class} — Chapter choose karo</p>
             </div>
+          </div>
+
+          {/* Compact Dynamic Context Banner */}
+          <div style={{
+            background: `${color}14`,
+            border: `1px solid ${color}33`,
+            borderRadius: 10,
+            padding: "8px 12px",
+            marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 8
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: C.text }}>
+              <span style={{ color }}>📌</span>
+              <span>{contextString}</span>
+            </div>
+            {activeVariant?.book && (
+              <span style={{ fontSize: 11, color: C.muted, background: C.card, padding: "2px 8px", borderRadius: 6, border: `1px solid ${C.border}` }}>
+                📖 {activeVariant.book}
+              </span>
+            )}
           </div>
 
           {/* Error */}
           {quizError && (
             <div style={{ background: "#7f1d1d44", border: "1px solid #ef444444", borderRadius: 10, padding: "12px 16px", color: "#fca5a5", marginBottom: 12, fontSize: 13 }}>
               {quizError}
-              <button onClick={() => fetchChapters(quizSubject)} style={{ marginLeft: 12, background: "none", border: "none", color: "#fca5a5", cursor: "pointer", textDecoration: "underline", fontFamily: "inherit", fontSize: 13 }}>Retry</button>
+              <button onClick={() => fetchChapters(quizSubject, quizCourse)} style={{ marginLeft: 12, background: "none", border: "none", color: "#fca5a5", cursor: "pointer", textDecoration: "underline", fontFamily: "inherit", fontSize: 13 }}>Retry</button>
+            </div>
+          )}
+
+          {/* Course Variant Selector (rendered only when subject has multiple active variants) */}
+          {variants.length > 1 && (
+            <div style={{
+              background: C.card,
+              border: `1px solid ${C.border}`,
+              borderRadius: 12,
+              padding: "12px 14px",
+              marginBottom: 14
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                Course / Syllabus Variant
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {variants.map(v => {
+                  const isSel = quizCourse === v.key;
+                  return (
+                    <button
+                      key={v.key}
+                      onClick={() => handleCourseSelect(v.key)}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: 8,
+                        fontSize: 12,
+                        fontWeight: isSel ? 700 : 500,
+                        border: `1.5px solid ${isSel ? color : C.border}`,
+                        background: isSel ? `${color}22` : C.dim,
+                        color: isSel ? color : C.text,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        transition: "all 0.15s ease",
+                        boxShadow: isSel ? `0 0 0 2px ${color}33` : "none"
+                      }}
+                    >
+                      <span>{v.label}</span>
+                      {v.code && (
+                        <span style={{
+                          fontSize: 10,
+                          padding: "1px 5px",
+                          borderRadius: 4,
+                          background: isSel ? `${color}44` : C.card,
+                          color: isSel ? "#fff" : C.muted
+                        }}>
+                          {v.code}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Selection guidance / Selected indicator */}
+          {!selectedChapter && quizMode !== "full" ? (
+            <div style={{
+              background: C.dim,
+              border: `1px dashed ${C.border}`,
+              borderRadius: 10,
+              padding: "9px 12px",
+              marginBottom: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 12,
+              color: C.muted
+            }}>
+              <span>💡</span>
+              <span>Ek chapter select karo ya Full Subject Test choose karo.</span>
+            </div>
+          ) : (
+            <div style={{
+              background: `${color}18`,
+              border: `1px solid ${color}44`,
+              borderRadius: 10,
+              padding: "9px 12px",
+              marginBottom: 12,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              fontSize: 12,
+              fontWeight: 600,
+              color: color
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span>✓ Selected:</span>
+                <span style={{ color: C.text }}>
+                  {quizMode === "full" ? "⚡ Full Subject Test" : `📖 Ch.${selectedChapter?.num}: ${selectedChapter?.name}`}
+                </span>
+              </div>
+              <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>Neeche 'Aage Badho' dabayein</span>
             </div>
           )}
 
@@ -443,33 +704,139 @@ Return ONLY a raw JSON array:
             </div>
           )}
 
-          {/* Chapter list */}
-          {!chaptersLoading && chapters.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {chapters.map(ch => {
-                const isSelected = selectedChapter?.num === ch.num && quizMode === "chapter";
-                return (
-                  <button key={ch.num} onClick={() => handleChapterSelect(ch)} style={{
-                    display: "flex", alignItems: "center", gap: 10,
-                    background: isSelected ? color + "18" : C.card,
-                    border: `1.5px solid ${isSelected ? color : C.border}`,
-                    borderRadius: 10, padding: "10px 14px", cursor: "pointer",
-                    textAlign: "left", fontFamily: "inherit",
-                    boxShadow: isSelected ? `0 0 0 2px ${color}33` : "none",
-                  }}>
-                    <span style={{
-                      minWidth: 30, height: 30, borderRadius: 8, display: "flex",
-                      alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800,
-                      background: isSelected ? color : C.dim, color: isSelected ? "#fff" : C.muted,
-                      flexShrink: 0,
-                    }}>{ch.num}</span>
-                    <span style={{ flex: 1, fontSize: 13, fontWeight: isSelected ? 600 : 400, color: isSelected ? color : C.text, lineHeight: 1.4 }}>{ch.name}</span>
-                    {isSelected && <span style={{ color, fontWeight: 800 }}>✓</span>}
-                  </button>
-                );
-              })}
+          {/* Chapter Search (shown only when chapters.length >= 6) */}
+          {!chaptersLoading && chapters.length >= 6 && (
+            <div style={{
+              position: "relative",
+              marginBottom: 10,
+              display: "flex",
+              alignItems: "center"
+            }}>
+              <span style={{
+                position: "absolute",
+                left: 12,
+                fontSize: 14,
+                color: C.muted,
+                pointerEvents: "none"
+              }}>
+                🔍
+              </span>
+              <input
+                type="text"
+                value={chapterSearch}
+                onChange={e => setChapterSearch(e.target.value)}
+                placeholder="Search chapter name or number..."
+                style={{
+                  width: "100%",
+                  background: C.card,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  padding: "10px 36px 10px 36px",
+                  fontSize: 14,
+                  color: C.text,
+                  outline: "none",
+                  fontFamily: "inherit",
+                  boxSizing: "border-box"
+                }}
+                onFocus={e => e.target.style.borderColor = color}
+                onBlur={e => e.target.style.borderColor = C.border}
+              />
+              {chapterSearch && (
+                <button
+                  type="button"
+                  onClick={() => setChapterSearch("")}
+                  style={{
+                    position: "absolute",
+                    right: 10,
+                    background: C.dim,
+                    border: "none",
+                    borderRadius: "50%",
+                    width: 20,
+                    height: 20,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: C.muted,
+                    fontSize: 11,
+                    cursor: "pointer",
+                    padding: 0
+                  }}
+                  title="Clear search"
+                >
+                  ✕
+                </button>
+              )}
             </div>
           )}
+
+          {/* Chapter list / Filtered results */}
+          {!chaptersLoading && chapters.length > 0 && (() => {
+            const query = chapterSearch.trim().toLowerCase();
+            const filteredChapters = query
+              ? chapters.filter(ch => String(ch.num).includes(query) || ch.name.toLowerCase().includes(query))
+              : chapters;
+
+            if (filteredChapters.length === 0) {
+              return (
+                <div style={{
+                  background: C.card,
+                  border: `1px dashed ${C.border}`,
+                  borderRadius: 10,
+                  padding: "20px 16px",
+                  textAlign: "center",
+                  margin: "6px 0"
+                }}>
+                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 8 }}>
+                    Koi chapter nahi mila. Doosra keyword try karo.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setChapterSearch("")}
+                    style={{
+                      background: C.dim,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 6,
+                      padding: "4px 12px",
+                      color: color,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      fontFamily: "inherit"
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {filteredChapters.map(ch => {
+                  const isSelected = selectedChapter?.num === ch.num && quizMode === "chapter";
+                  return (
+                    <button key={ch.num} onClick={() => handleChapterSelect(ch)} style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      background: isSelected ? color + "18" : C.card,
+                      border: `1.5px solid ${isSelected ? color : C.border}`,
+                      borderRadius: 10, padding: "10px 14px", cursor: "pointer",
+                      textAlign: "left", fontFamily: "inherit",
+                      boxShadow: isSelected ? `0 0 0 2px ${color}33` : "none",
+                    }}>
+                      <span style={{
+                        minWidth: 30, height: 30, borderRadius: 8, display: "flex",
+                        alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800,
+                        background: isSelected ? color : C.dim, color: isSelected ? "#fff" : C.muted,
+                        flexShrink: 0,
+                      }}>{ch.num}</span>
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: isSelected ? 600 : 400, color: isSelected ? color : C.text, lineHeight: 1.4 }}>{ch.name}</span>
+                      {isSelected && <span style={{ color, fontWeight: 800 }}>✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
           {/* Sticky start button */}
           {(selectedChapter || quizMode === "full") && (
@@ -492,14 +859,31 @@ Return ONLY a raw JSON array:
           )}
         </div>
       </div>
-    );
+      );
+    }
 
     // ── Step: Settings ───────────────────────────────────────────────────────
-    if (quizStep === "settings") return (
+    if (quizStep === "settings") {
+      const handleBackFromSettings = () => {
+        if (quizLoading) {
+          quizGenIdRef.current += 1;
+          setQuizLoading(false);
+          setQuizError(null);
+        }
+        setQuizStep("chapter");
+      };
+
+      const handleCancelGeneration = () => {
+        quizGenIdRef.current += 1;
+        setQuizLoading(false);
+        setQuizError(null);
+      };
+
+      return (
       <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 20px" }}>
         <div style={{ maxWidth: 500, margin: "0 auto" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-            <button onClick={() => setQuizStep("chapter")} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, color: C.muted, padding: "4px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>← Back</button>
+            <button onClick={handleBackFromSettings} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, color: C.muted, padding: "4px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>← Back</button>
             <div>
               <h2 style={{ color, fontSize: 17, margin: 0, fontWeight: 800 }}>⚙️ Quiz Settings</h2>
               <p style={{ color: C.muted, fontSize: 12, margin: 0 }}>
@@ -549,10 +933,37 @@ Return ONLY a raw JSON array:
             }}>
               {quizLoading ? "⏳ Questions ban rahe hain..." : "🚀 Quiz Shuru Karo!"}
             </button>
+
+            {/* In-flight feedback & Cancel action */}
+            {quizLoading && (
+              <div style={{ marginTop: 12, textAlign: "center" }}>
+                <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
+                  Questions ban rahe hain... Yeh kuch seconds le sakta hai. ⏳
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCancelGeneration}
+                  style={{
+                    background: "none",
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 8,
+                    padding: "6px 14px",
+                    color: C.muted,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: "inherit"
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
-    );
+      );
+    }
 
     // ── Step: Active Quiz (one question at a time) ───────────────────────────
     if (quizStep === "quiz" && quizQuestions.length > 0) {
@@ -635,6 +1046,201 @@ Return ONLY a raw JSON array:
       );
     }
 
+    // ── Step: Result Screen ──────────────────────────────────────────────────
+    if (quizStep === "result") {
+      const total = quizQuestions.length;
+      const pct = total > 0 ? Math.round((liveScore / total) * 100) : 0;
+      const celebrationIcon = pct >= 80 ? "🏆" : pct >= 60 ? "💪" : "📖";
+      const feedbackText = pct >= 80
+        ? "Ekdum zabardast! Bahut badhiya performance! 🔥"
+        : pct >= 60
+        ? "Achha hua! Thoda aur practice karoge toh full marks pakka! 💪"
+        : "Koi baat nahi, practice se sab aata hai! Weak areas pe dhyan do 📖";
+
+      const subjectLabel = quizMode === "full"
+        ? quizSubject
+        : `${quizSubject} Ch.${selectedChapter?.num || ""}`;
+      const chapterDisplay = quizMode === "full"
+        ? "⚡ Full Subject Test"
+        : `📖 Ch.${selectedChapter?.num}: ${selectedChapter?.name}`;
+
+      const handleDiscussInChat = () => {
+        const assistantMsg = `Quiz result: ${liveScore}/${total} on ${subjectLabel} (${pct}%). ${pct >= 80 ? "Ekdum zabardast! 🔥" : pct >= 60 ? "Achha hua! Thoda aur practice kar 💪" : "Koi baat nahi, practice se sab aata hai! Weak areas pe dhyan do 📖"}`;
+        resetQuiz();
+        setMessages(m => [...m, {
+          role: "assistant",
+          content: assistantMsg
+        }]);
+        setView("chat");
+      };
+
+      const handleTakeAnotherQuiz = () => {
+        resetQuiz();
+      };
+
+      const handleGoHome = () => {
+        resetQuiz();
+        setView("home");
+      };
+
+      return (
+        <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "20px 14px" : "32px 20px" }}>
+          <div style={{ maxWidth: 520, margin: "0 auto" }}>
+            <div style={{
+              background: C.card,
+              border: `1.5px solid ${color}44`,
+              borderRadius: 16,
+              padding: isMobile ? "24px 16px" : "30px 24px",
+              textAlign: "center",
+              boxShadow: `0 8px 30px ${color}15`
+            }}>
+              {/* Badge */}
+              <div style={{
+                display: "inline-block",
+                padding: "4px 12px",
+                borderRadius: 20,
+                background: `${color}18`,
+                color: color,
+                fontSize: 12,
+                fontWeight: 700,
+                marginBottom: 14
+              }}>
+                {icon} {quizSubject}
+              </div>
+
+              {/* Title / Chapter */}
+              <h2 style={{ fontSize: isMobile ? 18 : 20, color: C.text, margin: "0 0 6px", fontWeight: 800 }}>
+                Quiz Complete!
+              </h2>
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>
+                {chapterDisplay}
+              </div>
+
+              {/* Celebration Icon */}
+              <div style={{ fontSize: 52, margin: "10px 0" }}>
+                {celebrationIcon}
+              </div>
+
+              {/* Score Readout */}
+              <div style={{ margin: "12px 0 6px" }}>
+                <span style={{ fontSize: isMobile ? 38 : 44, fontWeight: 900, color }}>
+                  {liveScore}
+                </span>
+                <span style={{ fontSize: isMobile ? 22 : 26, fontWeight: 700, color: C.muted }}>
+                  {" "}/ {total}
+                </span>
+              </div>
+
+              <div style={{ fontSize: 15, fontWeight: 700, color: pct >= 60 ? "#22C55E" : "#F59E0B", marginBottom: 16 }}>
+                {pct}% Accuracy
+              </div>
+
+              {/* Accuracy / Progress Bar */}
+              <div style={{ height: 8, background: C.dim, borderRadius: 99, overflow: "hidden", maxWidth: 320, margin: "0 auto 20px" }}>
+                <div style={{
+                  height: "100%",
+                  width: `${pct}%`,
+                  background: pct >= 80 ? "linear-gradient(90deg, #22C55E, #10B981)" : pct >= 60 ? "linear-gradient(90deg, #F59E0B, #EAB308)" : "linear-gradient(90deg, #EF4444, #F97316)",
+                  borderRadius: 99,
+                  transition: "width 0.8s ease"
+                }} />
+              </div>
+
+              {/* Encouraging Feedback */}
+              <p style={{
+                fontSize: 14,
+                color: C.text,
+                lineHeight: 1.5,
+                background: C.dim,
+                padding: "12px 16px",
+                borderRadius: 12,
+                margin: "0 0 24px"
+              }}>
+                {feedbackText}
+              </p>
+
+              {/* Three Actions */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={handleDiscussInChat}
+                  style={{
+                    width: "100%",
+                    border: "none",
+                    borderRadius: 12,
+                    padding: "13px 16px",
+                    color: "#fff",
+                    fontSize: 15,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    background: `linear-gradient(135deg, ${color}, ${color}dd)`,
+                    fontFamily: "inherit",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8
+                  }}
+                >
+                  <span>💬</span>
+                  <span>Chat mein Discuss Karo</span>
+                </button>
+
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={handleTakeAnotherQuiz}
+                    style={{
+                      flex: 1,
+                      border: `1.5px solid ${C.border}`,
+                      borderRadius: 12,
+                      padding: "12px 14px",
+                      background: C.dim,
+                      color: C.text,
+                      fontSize: 14,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6
+                    }}
+                  >
+                    <span>🔄</span>
+                    <span>Doosra Quiz Do</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleGoHome}
+                    style={{
+                      flex: 1,
+                      border: `1.5px solid ${C.border}`,
+                      borderRadius: 12,
+                      padding: "12px 14px",
+                      background: C.dim,
+                      color: C.text,
+                      fontSize: 14,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6
+                    }}
+                  >
+                    <span>🏠</span>
+                    <span>Home / Study Hub</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     // Fallback loading during quiz generation
     if (quizLoading) return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
@@ -644,6 +1250,364 @@ Return ONLY a raw JSON array:
     );
 
     return null;
+  };
+
+  // ── HOME / STUDY HUB VIEW ───────────────────────────────────────────────────
+  const renderHomeView = () => {
+    const lastQuiz = quizHistory.length > 0 ? quizHistory[0] : null;
+
+    const goToChatClean = () => {
+      setQuizSubject(null);
+      setSelectedChapter(null);
+      setQuizCourse(null);
+      setView("chat");
+    };
+
+    const goToQuizClean = () => {
+      resetQuiz();
+      setView("quiz");
+    };
+
+    return (
+      <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 20px" }}>
+        <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* 1. Header & Greeting Card */}
+          <Card style={{
+            background: `linear-gradient(135deg, ${C.card}, ${C.dim})`,
+            border: `1px solid ${C.border}`,
+            position: "relative",
+            overflow: "hidden"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+              <div>
+                <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 800, margin: "0 0 6px", color: C.text }}>
+                  Namaste, {user.name}! 👋
+                </h1>
+                <p style={{ margin: 0, fontSize: 13, color: C.muted }}>
+                  Class {user.class} • Ready to learn today?
+                </p>
+              </div>
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                background: `${C.gold}1a`,
+                border: `1px solid ${C.gold}44`,
+                borderRadius: 99,
+                padding: "6px 14px",
+                color: C.gold,
+                fontWeight: 700,
+                fontSize: 13,
+                boxShadow: `0 2px 8px ${C.gold}15`
+              }}>
+                <span>🔥 {streak} Day Streak</span>
+              </div>
+            </div>
+          </Card>
+
+          {/* 2. Quick Actions Grid */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
+            gap: 12
+          }}>
+            {/* Ask a Doubt */}
+            <div
+              onClick={goToChatClean}
+              style={{
+                background: C.card,
+                border: `1px solid ${C.border}`,
+                borderRadius: 14,
+                padding: "18px 20px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 16,
+                transition: "all 0.15s ease",
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.borderColor = C.accent;
+                e.currentTarget.style.transform = "translateY(-1px)";
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.borderColor = C.border;
+                e.currentTarget.style.transform = "translateY(0)";
+              }}
+            >
+              <div style={{
+                width: 48,
+                height: 48,
+                borderRadius: 12,
+                background: `linear-gradient(135deg, ${C.accent}22, ${C.accentSoft || "#4f46e5"}33)`,
+                border: `1px solid ${C.accent}44`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 24,
+                flexShrink: 0
+              }}>
+                🤖
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 2 }}>
+                  Ask a Doubt
+                </div>
+                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.4 }}>
+                  Instant CBSE tutor for any question
+                </div>
+              </div>
+              <span style={{ color: C.accent, fontSize: 18, fontWeight: 700 }}>→</span>
+            </div>
+
+            {/* Take a Quiz */}
+            <div
+              onClick={goToQuizClean}
+              style={{
+                background: C.card,
+                border: `1px solid ${C.border}`,
+                borderRadius: 14,
+                padding: "18px 20px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 16,
+                transition: "all 0.15s ease",
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.borderColor = C.purple;
+                e.currentTarget.style.transform = "translateY(-1px)";
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.borderColor = C.border;
+                e.currentTarget.style.transform = "translateY(0)";
+              }}
+            >
+              <div style={{
+                width: 48,
+                height: 48,
+                borderRadius: 12,
+                background: `${C.purple}22`,
+                border: `1px solid ${C.purple}44`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 24,
+                flexShrink: 0
+              }}>
+                🧠
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 2 }}>
+                  Take a Quiz
+                </div>
+                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.4 }}>
+                  Test concepts & earn streak
+                </div>
+              </div>
+              <span style={{ color: C.purple, fontSize: 18, fontWeight: 700 }}>→</span>
+            </div>
+          </div>
+
+          {/* 3. Continue Studying Card */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.text, display: "flex", alignItems: "center", gap: 6 }}>
+                <span>📚</span> Continue Studying
+              </div>
+            </div>
+
+            {lastQuiz ? (
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 12,
+                background: C.dim,
+                padding: "12px 14px",
+                borderRadius: 10,
+                border: `1px solid ${C.border}`
+              }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 2, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    Last Practiced
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>
+                    {lastQuiz.subject}
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+                    Previous Score: <strong style={{ color: lastQuiz.pct >= 70 ? C.green : lastQuiz.pct >= 50 ? C.gold : C.red }}>{lastQuiz.score}/{lastQuiz.total} ({lastQuiz.pct}%)</strong>
+                  </div>
+                </div>
+                <Btn
+                  small
+                  variant="primary"
+                  onClick={() => goToChatWithPrompt(`Help me revise ${lastQuiz.subject} for Class ${user.class}`)}
+                >
+                  Revise Now
+                </Btn>
+              </div>
+            ) : (
+              <div>
+                <p style={{ margin: "0 0 10px", fontSize: 13, color: C.muted }}>
+                  Start your study journey! Choose an active subject to begin:
+                </p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {classSubjects.slice(0, 4).map(sub => (
+                    <button
+                      key={sub}
+                      onClick={() => goToChatWithPrompt(`Help me with ${sub} for Class ${user.class}`)}
+                      style={{
+                        padding: "6px 12px",
+                        background: C.dim,
+                        border: `1px solid ${getColor(sub)}44`,
+                        borderRadius: 8,
+                        color: getColor(sub),
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6
+                      }}
+                    >
+                      <span>{getIcon(sub)}</span>
+                      <span>{sub}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* 4. Weak Topics / Revision Card */}
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14, color: C.purple, display: "flex", alignItems: "center", gap: 6 }}>
+              <span>🎯</span> Focus Areas & Weak Topics
+            </div>
+
+            {weakTopics.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {weakTopics.map((topic, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      background: C.dim,
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      border: `1px solid ${C.border}`
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <Badge color={[C.gold, C.red, C.purple, C.accent, C.green][i % 5]}>
+                        Focus
+                      </Badge>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {topic}
+                      </span>
+                    </div>
+                    <Btn
+                      small
+                      variant="primary"
+                      onClick={() => goToChatWithPrompt("Please help me understand and revise: " + topic)}
+                      style={{ flexShrink: 0 }}
+                    >
+                      Revise
+                    </Btn>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: C.muted, padding: "4px 0", lineHeight: 1.5 }}>
+                ✨ All caught up! Solve quizzes or ask doubts to identify areas to focus on.
+              </div>
+            )}
+          </Card>
+
+          {/* 5. Performance Snapshot */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.text, display: "flex", alignItems: "center", gap: 6 }}>
+                <span>📊</span> Performance Snapshot
+              </div>
+              <button
+                onClick={() => setView("progress")}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: C.accent,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  padding: 0
+                }}
+              >
+                View full report →
+              </button>
+            </div>
+
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: isMobile ? "1fr 1fr 1fr" : "repeat(3, 1fr)",
+              gap: 8
+            }}>
+              <div style={{
+                background: C.dim,
+                border: `1px solid ${C.border}`,
+                borderRadius: 10,
+                padding: "12px 8px",
+                textAlign: "center"
+              }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Quizzes
+                </div>
+                <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: C.accent }}>
+                  {quizHistory.length}
+                </div>
+              </div>
+
+              <div style={{
+                background: C.dim,
+                border: `1px solid ${C.border}`,
+                borderRadius: 10,
+                padding: "12px 8px",
+                textAlign: "center"
+              }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Avg Score
+                </div>
+                <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: avgScore >= 70 ? C.green : C.gold }}>
+                  {avgScore}%
+                </div>
+              </div>
+
+              <div style={{
+                background: C.dim,
+                border: `1px solid ${C.border}`,
+                borderRadius: 10,
+                padding: "12px 8px",
+                textAlign: "center"
+              }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Questions
+                </div>
+                <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: C.purple }}>
+                  {totalQ}
+                </div>
+              </div>
+            </div>
+          </Card>
+
+        </div>
+      </div>
+    );
   };
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -676,24 +1640,195 @@ Return ONLY a raw JSON array:
           <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}`, background: C.card + "dd", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
             <button onClick={() => setSidebarOpen(true)} style={{ background: "none", border: "none", color: C.text, fontSize: 22, cursor: "pointer", padding: 0 }}>☰</button>
             <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>
-              {view === "chat" ? (mode === "homework" ? "📝 Homework Help" : "💬 Ask Doubts") : view === "quiz" ? "🧠 Quiz" : "📊 Progress"}
+              {view === "home" ? "🏠 Study Hub" : view === "chat" ? (mode === "homework" ? "📝 Homework Help" : "💬 Ask Doubts") : view === "quiz" ? "🧠 Quiz" : "📊 Progress"}
             </span>
             <span style={{ fontSize: 13, color: C.gold }}>🔥 {streak}d</span>
           </div>
         )}
 
+        {/* ── HOME VIEW ── */}
+        {view === "home" && renderHomeView()}
+
         {/* ── CHAT VIEW ── */}
         {view === "chat" && (<>
-          {!isMobile && (
-            <div style={{ padding: "12px 20px", borderBottom: `1px solid ${C.border}`, background: C.card + "aa", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-              <span style={{ fontWeight: 600, fontSize: 15 }}>{mode === "homework" ? "📝 Homework Help" : "💬 Ask Doubts"}</span>
-              <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                {["Maths", "Science", "English"].map(s => (
-                  <button key={s} onClick={() => send(`Help me with ${s} for Class ${user.class}`)} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 99, background: C.dim, color: C.muted, border: `1px solid ${C.border}`, cursor: "pointer" }}>📌{s}</button>
-                ))}
+          <div style={{
+            padding: isMobile ? "8px 12px" : "10px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            background: C.card + "bb",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: isMobile ? "wrap" : "nowrap",
+            gap: 10,
+            flexShrink: 0
+          }}>
+            {/* 1. PROMINENT CHAT MODE SWITCHER & NEW CHAT BUTTON */}
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              maxWidth: isMobile ? "100%" : "auto"
+            }}>
+              <div style={{
+                display: "inline-flex",
+                background: C.dim,
+                padding: 3,
+                borderRadius: 10,
+                border: `1px solid ${C.border}`
+              }}>
+                {[
+                  { id: "chat", l: "💬 Ask Doubts" },
+                  { id: "homework", l: "📝 Homework Help" }
+                ].map(m => {
+                  const isActive = mode === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setMode(m.id)}
+                      style={{
+                        border: "none",
+                        outline: "none",
+                        background: isActive ? `linear-gradient(135deg,${C.accent},${C.accentSoft || "#4f46e5"})` : "transparent",
+                        color: isActive ? "#fff" : C.muted,
+                        padding: isMobile ? "6px 12px" : "6px 14px",
+                        borderRadius: 8,
+                        fontSize: isMobile ? 12 : 13,
+                        fontWeight: isActive ? 700 : 500,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        transition: "all 0.15s ease",
+                        boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.2)" : "none",
+                        whiteSpace: "nowrap"
+                      }}
+                    >
+                      {m.l}
+                    </button>
+                  );
+                })}
               </div>
+
+              <button
+                type="button"
+                onClick={handleNewChat}
+                disabled={loading}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: isMobile ? "6px 10px" : "6px 12px",
+                  background: C.dim,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  color: loading ? C.muted : C.text,
+                  fontSize: isMobile ? 12 : 13,
+                  fontWeight: 600,
+                  cursor: loading ? "not-allowed" : "pointer",
+                  opacity: loading ? 0.6 : 1,
+                  fontFamily: "inherit",
+                  whiteSpace: "nowrap",
+                  transition: "all 0.15s ease"
+                }}
+                title={loading ? "AI reply generate ho raha hai..." : "Nayi chat shuru karo"}
+              >
+                <span>✨</span>
+                <span>Nayi Chat</span>
+              </button>
             </div>
-          )}
+
+            {/* 2. ACTIVE CHAT CONTEXT CHIP & DYNAMIC SUBJECT QUICK-CHIPS */}
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              overflowX: "auto",
+              maxWidth: isMobile ? "100%" : "65%",
+              paddingBottom: isMobile ? 2 : 0
+            }}>
+              {/* Active Subject / Chapter Context Chip */}
+              {(quizSubject || selectedChapter) && (
+                <div style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  borderRadius: 99,
+                  background: `${C.accent}22`,
+                  border: `1px solid ${C.accent}55`,
+                  color: C.accent,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                  flexShrink: 0
+                }}>
+                  <span>🎯</span>
+                  <span>
+                    {selectedChapter
+                      ? `${quizSubject} · Ch. ${selectedChapter.num} · ${selectedChapter.name}`
+                      : quizSubject}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuizSubject(null);
+                      setSelectedChapter(null);
+                      setQuizCourse(null);
+                    }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: C.accent,
+                      cursor: "pointer",
+                      padding: 0,
+                      marginLeft: 2,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      display: "flex",
+                      alignItems: "center"
+                    }}
+                    title="Clear focus (return to general doubt)"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {classSubjects.slice(0, 4).map(s => (
+                <button
+                  key={s}
+                  onClick={() => send(`Help me with ${s} for Class ${user.class}`)}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "4px 10px",
+                    borderRadius: 99,
+                    background: C.dim,
+                    color: C.muted,
+                    border: `1px solid ${C.border}`,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    transition: "all 0.15s ease",
+                    fontFamily: "inherit",
+                    flexShrink: 0
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.borderColor = C.accent;
+                    e.currentTarget.style.color = C.text;
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.borderColor = C.border;
+                    e.currentTarget.style.color = C.muted;
+                  }}
+                >
+                  <span>📌</span>
+                  <span>{s}</span>
+                </button>
+              ))}
+            </div>
+          </div>
 
           <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "12px" : "20px" }}>
             <div style={{ maxWidth: 680, margin: "0 auto" }}>
@@ -705,17 +1840,129 @@ Return ONLY a raw JSON array:
                 </div>
               )}
               {messages.map((m, i) => (
-                <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 12 }}>
-                  {m.role === "assistant" && (
-                    <div style={{ width: 30, height: 30, borderRadius: "50%", background: `linear-gradient(135deg,${C.accent},${C.purple})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, marginRight: 8, flexShrink: 0, marginTop: 2 }}>🎓</div>
+                <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", width: "100%" }}>
+                    {m.role === "assistant" && (
+                      <div style={{ width: 30, height: 30, borderRadius: "50%", background: `linear-gradient(135deg,${C.accent},${C.purple})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, marginRight: 8, flexShrink: 0, marginTop: 2 }}>🎓</div>
+                    )}
+                    <div style={{
+                      maxWidth: isMobile ? "85%" : "76%", padding: "10px 14px",
+                      borderRadius: m.role === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
+                      background: m.role === "user" ? `linear-gradient(135deg,${C.accent},${C.accentSoft || "#4f46e5"})` : (m.error ? "#7f1d1d22" : C.card),
+                      border: m.error ? "1px solid #ef444455" : (m.role === "assistant" ? `1px solid ${C.border}` : "none"),
+                      fontSize: isMobile ? 13 : 14, lineHeight: 1.65, whiteSpace: "pre-wrap", color: m.error ? "#fca5a5" : C.text
+                    }}>
+                      {m.content}
+                    </div>
+                  </div>
+                  {/* Inline Copy Button for Normal Assistant Messages */}
+                  {m.role === "assistant" && !m.error && i > 0 && (
+                    <div style={{ marginLeft: 38, marginTop: 4, display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => copyMessage(m.content, i)}
+                          style={{
+                            background: "none",
+                            border: `1px solid ${C.border}`,
+                            borderRadius: 6,
+                            padding: "3px 8px",
+                            color: copiedIndex === i ? "#22C55E" : C.muted,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            transition: "all 0.15s ease"
+                          }}
+                          title="Copy message to clipboard"
+                        >
+                          <span>{copiedIndex === i ? "✓" : "📋"}</span>
+                          <span>{copiedIndex === i ? "Copied!" : "Copy"}</span>
+                        </button>
+                      </div>
+
+                      {/* Follow-up suggestions ONLY on latest normal assistant response */}
+                      {i === messages.length - 1 && !loading && (
+                        <div style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          flexWrap: "wrap",
+                          marginTop: 2
+                        }}>
+                          {[
+                            { label: "💡 Example do", prompt: "Iska ek simple real-life example dekar samjhao" },
+                            { label: "🧠 Aasan bhasha mein", prompt: "Isko aur simple aur aasan bhasha mein samjhao" },
+                            { label: "✍️ Practice question", prompt: "Is topic pe ek practice question do taaki main test kar sakoon" }
+                          ].map(f => (
+                            <button
+                              key={f.label}
+                              type="button"
+                              onClick={() => send(f.prompt)}
+                              style={{
+                                background: C.dim,
+                                border: `1px solid ${C.border}`,
+                                borderRadius: 99,
+                                padding: "4px 10px",
+                                color: C.text,
+                                fontSize: 11,
+                                fontWeight: 500,
+                                cursor: "pointer",
+                                fontFamily: "inherit",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                transition: "all 0.15s ease",
+                                whiteSpace: "nowrap"
+                              }}
+                              onMouseEnter={e => {
+                                e.currentTarget.style.borderColor = C.accent;
+                                e.currentTarget.style.color = C.accent;
+                              }}
+                              onMouseLeave={e => {
+                                e.currentTarget.style.borderColor = C.border;
+                                e.currentTarget.style.color = C.text;
+                              }}
+                            >
+                              {f.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
-                  <div style={{
-                    maxWidth: isMobile ? "85%" : "76%", padding: "10px 14px",
-                    borderRadius: m.role === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
-                    background: m.role === "user" ? `linear-gradient(135deg,${C.accent},${C.accentSoft || "#4f46e5"})` : C.card,
-                    border: m.role === "assistant" ? `1px solid ${C.border}` : "none",
-                    fontSize: isMobile ? 13 : 14, lineHeight: 1.65, whiteSpace: "pre-wrap", color: C.text
-                  }}>{m.content}</div>
+
+                  {/* Inline Retry Button for Failed Assistant Messages */}
+                  {m.role === "assistant" && m.error && m.retryMsg && (
+                    <div style={{ marginLeft: 38, marginTop: 6 }}>
+                      <button
+                        type="button"
+                        onClick={() => send(m.retryMsg, true)}
+                        disabled={loading}
+                        style={{
+                          background: C.dim,
+                          border: `1px solid ${C.border}`,
+                          borderRadius: 8,
+                          padding: "4px 10px",
+                          color: loading ? C.muted : C.accent,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: loading ? "not-allowed" : "pointer",
+                          fontFamily: "inherit",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          opacity: loading ? 0.6 : 1
+                        }}
+                      >
+                        <span>🔄</span>
+                        <span>Dobara try karo</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
               {loading && (
@@ -772,36 +2019,249 @@ Return ONLY a raw JSON array:
                 ))}
               </div>
 
-              {weakTopics.length > 0 && (
-                <Card style={{ marginBottom: 14 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 10, fontSize: 14, color: C.purple }}>📌 Focus Topics</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {weakTopics.map((t, i) => (
-                      <span key={i} style={{ background: `${[C.gold, C.red, C.purple, C.accent, C.green][i % 5]}22`, color: [C.gold, C.red, C.purple, C.accent, C.green][i % 5], border: `1px solid ${[C.gold, C.red, C.purple, C.accent, C.green][i % 5]}44`, borderRadius: 99, padding: "4px 12px", fontSize: 12, fontWeight: 600 }}>{t}</span>
-                    ))}
-                  </div>
-                </Card>
-              )}
+              {/* ── SUBJECT MASTERY CARD ── */}
+              {(() => {
+                // Group quizHistory by subject
+                const subjectMap = {};
+                quizHistory.forEach(q => {
+                  const s = q.subject || "General";
+                  if (!subjectMap[s]) {
+                    subjectMap[s] = { totalPct: 0, count: 0, firstIndex: quizHistory.indexOf(q) };
+                  }
+                  subjectMap[s].totalPct += (typeof q.pct === "number" ? q.pct : 0);
+                  subjectMap[s].count += 1;
+                });
 
+                const subjectList = Object.keys(subjectMap).map(subject => ({
+                  subject,
+                  count: subjectMap[subject].count,
+                  avgPct: Math.round(subjectMap[subject].totalPct / subjectMap[subject].count),
+                  firstIndex: subjectMap[subject].firstIndex
+                })).sort((a, b) => {
+                  if (b.count !== a.count) return b.count - a.count;
+                  return a.firstIndex - b.firstIndex;
+                });
+
+                return (
+                  <Card style={{ marginBottom: 14 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14, color: C.accent }}>
+                      📚 Subject Mastery
+                    </div>
+                    {subjectList.length === 0 ? (
+                      <div style={{ fontSize: 13, color: C.muted, padding: "4px 0" }}>
+                        Abhi tak koi quiz nahi li hai. Pehli quiz lekar apni subject mastery start karo! 🚀
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {subjectList.map(item => {
+                          const icon = getIcon(item.subject);
+                          const color = item.avgPct >= 70 ? C.green : item.avgPct >= 50 ? C.gold : C.red;
+                          return (
+                            <div key={item.subject} style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: 12,
+                              flexWrap: isMobile ? "wrap" : "nowrap"
+                            }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
+                                <div style={{
+                                  width: 32,
+                                  height: 32,
+                                  borderRadius: 8,
+                                  background: `${getColor(item.subject)}22`,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  fontSize: 16,
+                                  flexShrink: 0
+                                }}>
+                                  {icon}
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {item.subject}
+                                  </div>
+                                  <div style={{ fontSize: 11, color: C.muted }}>
+                                    {item.count} {item.count === 1 ? "quiz" : "quizzes"}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 10,
+                                width: isMobile ? "100%" : 210,
+                                justifyContent: "flex-end"
+                              }}>
+                                <div style={{ width: isMobile ? "calc(100% - 85px)" : 120 }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                                    <span style={{ fontSize: 11, color: C.muted }}>Mastery</span>
+                                    <span style={{ fontSize: 12, fontWeight: 700, color }}>{item.avgPct}%</span>
+                                  </div>
+                                  <ScoreBar pct={item.avgPct} color={color} />
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => goToChatWithPrompt(`Mujhe ${item.subject} revise karna hai. Important concepts samjhao aur practice ke liye guide karo.`)}
+                                  style={{
+                                    background: C.dim,
+                                    border: `1px solid ${C.border}`,
+                                    borderRadius: 8,
+                                    padding: "4px 8px",
+                                    color: C.accent,
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    cursor: "pointer",
+                                    fontFamily: "inherit",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                    whiteSpace: "nowrap",
+                                    transition: "all 0.15s ease",
+                                    flexShrink: 0
+                                  }}
+                                  onMouseEnter={e => {
+                                    e.currentTarget.style.borderColor = C.accent;
+                                    e.currentTarget.style.background = `${C.accent}15`;
+                                  }}
+                                  onMouseLeave={e => {
+                                    e.currentTarget.style.borderColor = C.border;
+                                    e.currentTarget.style.background = C.dim;
+                                  }}
+                                >
+                                  <span>💬</span>
+                                  <span>Revise</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </Card>
+                );
+              })()}
+
+              {/* ── FOCUS TOPICS CARD ── */}
+              <Card style={{ marginBottom: 14 }}>
+                <div style={{ fontWeight: 700, marginBottom: 10, fontSize: 14, color: C.purple }}>📌 Focus Topics</div>
+                {weakTopics.length > 0 ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {weakTopics.map((t, i) => {
+                      const baseColor = [C.gold, C.red, C.purple, C.accent, C.green][i % 5];
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => goToChatWithPrompt("Mujhe " + t + " samajhne mein dikkat ho rahi hai. Kripya iska concept easy language mein samjhao aur ek example do.")}
+                          title={`Chat mein revise karo: ${t}`}
+                          aria-label={`Chat mein revise karo: ${t}`}
+                          style={{
+                            background: `${baseColor}22`,
+                            color: baseColor,
+                            border: `1px solid ${baseColor}44`,
+                            borderRadius: 99,
+                            padding: "6px 12px",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            textAlign: "left",
+                            wordBreak: "break-word",
+                            maxWidth: "100%",
+                            transition: "all 0.15s ease"
+                          }}
+                          onMouseEnter={e => {
+                            e.currentTarget.style.borderColor = baseColor;
+                            e.currentTarget.style.background = `${baseColor}33`;
+                            e.currentTarget.style.transform = "translateY(-1px)";
+                          }}
+                          onMouseLeave={e => {
+                            e.currentTarget.style.borderColor = `${baseColor}44`;
+                            e.currentTarget.style.background = `${baseColor}22`;
+                            e.currentTarget.style.transform = "translateY(0)";
+                          }}
+                        >
+                          <span style={{ overflowWrap: "anywhere" }}>{t}</span>
+                          <span style={{ fontSize: 13, opacity: 0.9, flexShrink: 0 }}>💬</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 13, color: C.muted, padding: "2px 0", lineHeight: 1.5 }}>
+                    ✨ Koi weak topic nahi hai! Quizzes aur doubts ke hisaab se yahan focus topics dikhenge.
+                  </div>
+                )}
+              </Card>
+
+              {/* ── QUIZ HISTORY CARD ── */}
               <Card>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>📝 Quiz History</div>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>
+                  📝 Quiz History{quizHistory.length > 0 ? ` (${quizHistory.length})` : ""}
+                </div>
                 {quizHistory.length === 0
                   ? <div style={{ color: C.muted, fontSize: 14 }}>No quizzes yet. Quiz tab pe jao! 🧠</div>
-                  : quizHistory.map((q, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.subject}</div>
-                        <div style={{ fontSize: 11, color: C.muted }}>{new Date(q.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</div>
-                      </div>
-                      <div style={{ width: isMobile ? 80 : 120, flexShrink: 0 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                          <span style={{ fontSize: 11, color: C.muted }}>{q.score}/{q.total}</span>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: q.pct >= 70 ? C.green : q.pct >= 50 ? C.gold : C.red }}>{q.pct}%</span>
+                  : (
+                    <>
+                      {(showAllHistory || quizHistory.length <= 5 ? quizHistory : quizHistory.slice(0, 5)).map((q, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.subject}</div>
+                            <div style={{ fontSize: 11, color: C.muted }}>{new Date(q.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</div>
+                          </div>
+                          <div style={{ width: isMobile ? 80 : 120, flexShrink: 0 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                              <span style={{ fontSize: 11, color: C.muted }}>{q.score}/{q.total}</span>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: q.pct >= 70 ? C.green : q.pct >= 50 ? C.gold : C.red }}>{q.pct}%</span>
+                            </div>
+                            <ScoreBar pct={q.pct} color={q.pct >= 70 ? C.green : q.pct >= 50 ? C.gold : C.red} />
+                          </div>
                         </div>
-                        <ScoreBar pct={q.pct} color={q.pct >= 70 ? C.green : q.pct >= 50 ? C.gold : C.red} />
-                      </div>
-                    </div>
-                  ))}
+                      ))}
+
+                      {quizHistory.length > 5 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllHistory(prev => !prev)}
+                          style={{
+                            width: "100%",
+                            marginTop: 4,
+                            padding: "8px 12px",
+                            background: C.dim,
+                            border: `1px solid ${C.border}`,
+                            borderRadius: 8,
+                            color: C.accent,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                            transition: "all 0.15s ease"
+                          }}
+                          onMouseEnter={e => {
+                            e.currentTarget.style.borderColor = C.accent;
+                            e.currentTarget.style.background = `${C.accent}15`;
+                          }}
+                          onMouseLeave={e => {
+                            e.currentTarget.style.borderColor = C.border;
+                            e.currentTarget.style.background = C.dim;
+                          }}
+                        >
+                          <span>{showAllHistory ? "Show recent 5 ▴" : `Show all ${quizHistory.length} quizzes ▾`}</span>
+                        </button>
+                      )}
+                    </>
+                  )}
               </Card>
             </div>
           </div>
