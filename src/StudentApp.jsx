@@ -175,15 +175,91 @@ export default function StudentApp({ user, onLogout }) {
     setAnswered(false);
     setLiveScore(0);
 
+    const resolveCurriculumChapter = (cls, sub, course, chObj) => {
+      if (!cls || !sub || !chObj) return null;
+      const classData = CBSE_CURRICULUM[String(cls)];
+      if (!classData) return null;
+      const subjectData = classData[sub];
+      if (!subjectData) return null;
+      const yearData = subjectData["2026-27"];
+      if (!yearData) return null;
+
+      let variantEntry = null;
+      let resolvedCourse = course || null;
+      if (course && yearData[course]) {
+        variantEntry = yearData[course];
+      } else if (yearData.default) {
+        variantEntry = yearData.default;
+        resolvedCourse = resolvedCourse || "default";
+      } else if (yearData.standard) {
+        variantEntry = yearData.standard;
+        resolvedCourse = resolvedCourse || "standard";
+      } else {
+        const keys = Object.keys(yearData);
+        if (keys.length > 0) {
+          variantEntry = yearData[keys[0]];
+          resolvedCourse = resolvedCourse || keys[0];
+        }
+      }
+      if (!variantEntry || !Array.isArray(variantEntry.chapters)) return null;
+
+      const targetNum = typeof chObj === "object" ? chObj.num : Number(chObj);
+      const targetName = typeof chObj === "object" && chObj.name ? String(chObj.name).trim().toLowerCase() : null;
+
+      let matched = null;
+      if (targetNum !== undefined && targetNum !== null && !isNaN(targetNum)) {
+        matched = variantEntry.chapters.find(c => Number(c.num) === Number(targetNum));
+      }
+      if (!matched && targetName) {
+        matched = variantEntry.chapters.find(c => c.name && c.name.trim().toLowerCase() === targetName);
+      }
+      if (!matched) return null;
+
+      return {
+        num: matched.num,
+        name: matched.name,
+        type: matched.type || "chapter",
+        book: matched.book || variantEntry.book || null,
+        course: resolvedCourse,
+        code: variantEntry.code || null,
+        topics: Array.isArray(matched.topics) && matched.topics.length > 0 ? matched.topics : null
+      };
+    };
+
+    const resolvedChapter = selectedChapter
+      ? resolveCurriculumChapter(user.class, quizSubject, quizCourse, selectedChapter)
+      : null;
+
+    let curriculumContext = "";
+    if (resolvedChapter) {
+      const details = [
+        `Class: ${user.class}`,
+        `Subject: ${quizSubject}`,
+        resolvedChapter.course ? `Course/Variant: ${resolvedChapter.course}` : null,
+        resolvedChapter.code ? `Course Code: ${resolvedChapter.code}` : null,
+        resolvedChapter.book ? `Prescribed Book: ${resolvedChapter.book}` : null,
+        `${resolvedChapter.type === "unit" ? "Unit" : "Chapter"} Number: ${resolvedChapter.num}`,
+        `${resolvedChapter.type === "unit" ? "Unit" : "Chapter"} Name: "${resolvedChapter.name}"`
+      ].filter(Boolean).join("\n- ");
+      curriculumContext = `\nCurriculum Chapter Information:\n- ${details}\nGenerate questions strictly from the supplied curriculum chapter information. Do not use topics from other chapters, classes, or course variants.`;
+
+      if (resolvedChapter.topics && resolvedChapter.topics.length > 0) {
+        const topicsList = resolvedChapter.topics.map(t => `  * ${t}`).join("\n");
+        curriculumContext += `\nAllowed Topics for this chapter:\n${topicsList}\nCRITICAL: All questions must be based only on these supplied topics. Do not include questions from any out-of-scope or unlisted topics.`;
+      }
+    }
+
     const chapterScope = quizMode === "full"
       ? (chapters.length > 0
           ? `the complete CBSE 2026-27 curriculum for ${quizSubject} (Class ${user.class}) covering the following chapters:\n${chapters.map(c => `- Chapter ${c.num}: "${c.name}"`).join("\n")}`
           : `the complete CBSE 2026-27 curriculum for ${quizSubject} (Class ${user.class})`)
-      : `Chapter ${selectedChapter.num}: "${selectedChapter.name}" from CBSE 2026-27 ${quizSubject} (Class ${user.class})`;
+      : (resolvedChapter
+          ? `Chapter ${resolvedChapter.num}: "${resolvedChapter.name}" from CBSE 2026-27 ${quizSubject} (Class ${user.class})`
+          : `Chapter ${selectedChapter?.num || ""}: "${selectedChapter?.name || ""}" from CBSE 2026-27 ${quizSubject} (Class ${user.class})`);
 
     try {
       const questions = await claudeJSON(
-        `Generate exactly ${numQuestions} MCQ questions based strictly on ${chapterScope}.
+        `Generate exactly ${numQuestions} MCQ questions based strictly on ${chapterScope}.${curriculumContext}
 Difficulty: ${difficulty} (easy=basic recall, medium=concept understanding, hard=application/analysis).
 Rules:
 - Strictly test topics within the specified chapter scope.
@@ -200,7 +276,28 @@ Return ONLY a raw JSON array:
       if (quizGenIdRef.current !== currentGenId) return;
 
       if (!Array.isArray(questions) || questions.length === 0) throw new Error("empty");
-      setQuizQuestions(questions);
+
+      // Validate each question has valid question, 4 string options, valid correct index, and explanation
+      const validQuestions = questions.filter(item => {
+        if (!item || typeof item !== "object") return false;
+        const qText = item.question || item.q;
+        if (typeof qText !== "string" || !qText.trim()) return false;
+        if (!Array.isArray(item.options) || item.options.length !== 4) return false;
+        const allOptionsStrings = item.options.every(opt => typeof opt === "string" && opt.trim().length > 0);
+        if (!allOptionsStrings) return false;
+        if (typeof item.correct !== "number" || item.correct < 0 || item.correct > 3) return false;
+        if (typeof item.explanation !== "string") return false;
+        return true;
+      }).map(item => ({
+        question: (item.question || item.q).trim(),
+        options: item.options.map(opt => String(opt).trim()),
+        correct: item.correct,
+        explanation: item.explanation.trim()
+      }));
+
+      if (validQuestions.length === 0) throw new Error("invalid_questions");
+
+      setQuizQuestions(validQuestions);
       setQuizStep("quiz");
     } catch {
       if (quizGenIdRef.current === currentGenId) {
@@ -2216,13 +2313,49 @@ Return ONLY a raw JSON array:
                             <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.subject}</div>
                             <div style={{ fontSize: 11, color: C.muted }}>{new Date(q.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</div>
                           </div>
-                          <div style={{ width: isMobile ? 80 : 120, flexShrink: 0 }}>
+                          <div style={{ width: isMobile ? 80 : 110, flexShrink: 0 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
                               <span style={{ fontSize: 11, color: C.muted }}>{q.score}/{q.total}</span>
                               <span style={{ fontSize: 12, fontWeight: 700, color: q.pct >= 70 ? C.green : q.pct >= 50 ? C.gold : C.red }}>{q.pct}%</span>
                             </div>
                             <ScoreBar pct={q.pct} color={q.pct >= 70 ? C.green : q.pct >= 50 ? C.gold : C.red} />
                           </div>
+                          <button
+                            type="button"
+                            onClick={() => goToChatWithPrompt(
+                              `Maine ${q.subject} ki quiz li thi (Score: ${q.score}/${q.total}, ${q.pct}%). Kripya iske key concepts revise karao aur common mistakes samjhao.`
+                            )}
+                            title={`Chat mein revise karo: ${q.subject}`}
+                            aria-label={`Chat mein revise karo: ${q.subject}`}
+                            style={{
+                              background: C.dim,
+                              border: `1px solid ${C.border}`,
+                              borderRadius: 8,
+                              padding: isMobile ? "4px 6px" : "4px 8px",
+                              color: C.accent,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 3,
+                              whiteSpace: "nowrap",
+                              flexShrink: 0,
+                              transition: "all 0.15s ease"
+                            }}
+                            onMouseEnter={e => {
+                              e.currentTarget.style.borderColor = C.accent;
+                              e.currentTarget.style.background = `${C.accent}15`;
+                            }}
+                            onMouseLeave={e => {
+                              e.currentTarget.style.borderColor = C.border;
+                              e.currentTarget.style.background = C.dim;
+                            }}
+                          >
+                            <span>💬</span>
+                            {!isMobile && <span>Revise</span>}
+                          </button>
                         </div>
                       ))}
 

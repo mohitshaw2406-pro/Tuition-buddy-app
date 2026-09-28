@@ -39,6 +39,9 @@ Always end with an encouraging phrase in Hinglish like "Tu kar sakta hai! 🌟" 
 
 
 export const callClaude = async (messages, system, maxTokens = 1200) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000); // 45s client timeout
+
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -50,7 +53,10 @@ export const callClaude = async (messages, system, maxTokens = 1200) => {
         system: system,
         max_tokens: typeof maxTokens === "number" && maxTokens > 0 ? maxTokens : 1200
       }),
+      signal: controller.signal
     });
+
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
       console.warn("AI chat endpoint returned non-OK status:", res.status);
@@ -60,6 +66,7 @@ export const callClaude = async (messages, system, maxTokens = 1200) => {
     const data = await res.json();
     return data.choices?.[0]?.message?.content || "Kuch problem ho gayi. Try again!";
   } catch (err) {
+    clearTimeout(timeoutId);
     console.error("AI chat request failed:", err);
     return "Kuch problem ho gayi. Try again!";
   }

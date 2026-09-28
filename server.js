@@ -300,7 +300,7 @@ export function createExpressApp() {
     ];
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000); // 25s overall timeout
+    const timeout = setTimeout(() => controller.abort(), 40000); // 40s overall timeout to allow fallback without premature abort
 
     try {
       let lastStatus = 500;
