@@ -241,7 +241,25 @@ export default function StudentApp({ user, onLogout }) {
         `${resolvedChapter.type === "unit" ? "Unit" : "Chapter"} Number: ${resolvedChapter.num}`,
         `${resolvedChapter.type === "unit" ? "Unit" : "Chapter"} Name: "${resolvedChapter.name}"`
       ].filter(Boolean).join("\n- ");
-      curriculumContext = `\nCurriculum Chapter Information:\n- ${details}\nGenerate questions strictly from the supplied curriculum chapter information. Do not use topics from other chapters, classes, or course variants.`;
+
+      // Sibling chapter boundaries from the already-loaded chapters for this subject/course
+      const siblingChapters = Array.isArray(chapters)
+        ? chapters.filter(c => Number(c.num) !== Number(resolvedChapter.num))
+        : [];
+      const siblingBoundaryText = siblingChapters.length > 0
+        ? `\nChapter Boundary: Generate questions ONLY from Chapter ${resolvedChapter.num} ("${resolvedChapter.name}"). Do NOT include questions or concepts that belong to sibling chapters in this course (such as: ${siblingChapters.map(c => `Chapter ${c.num}: "${c.name}"`).join(", ")}).`
+        : "";
+
+      const prescribedBookText = resolvedChapter.book
+        ? ` and the prescribed NCERT book "${resolvedChapter.book}"`
+        : "";
+
+      curriculumContext = `\nCurriculum Chapter Information:\n- ${details}
+Syllabus & Source Constraints:
+- Strictly stay within the selected CBSE 2026-27 curriculum chapter${prescribedBookText}.
+- Prohibit any deleted, rationalised, or out-of-syllabus topics.
+- Prohibit any content from other classes, higher-level syllabi, or advanced competitive exams.
+- Generate questions strictly from the supplied curriculum chapter information. Do not use topics from other chapters, classes, or course variants.${siblingBoundaryText}`;
 
       if (resolvedChapter.topics && resolvedChapter.topics.length > 0) {
         const topicsList = resolvedChapter.topics.map(t => `  * ${t}`).join("\n");
@@ -338,7 +356,14 @@ Return ONLY a raw JSON array:
     const subjectLabel = quizMode === "full"
       ? quizSubject
       : `${quizSubject} Ch.${selectedChapter?.num || ""}`;
-    const entry = { subject: subjectLabel, score: liveScore, total, pct, date: new Date().toISOString() };
+    const entry = {
+      subject: subjectLabel,
+      score: liveScore,
+      total,
+      pct,
+      date: new Date().toISOString(),
+      ...(user?.class ? { class: String(user.class) } : {})
+    };
     setQuizHistory(h => [entry, ...h]);
 
     if (!isDemo) await saveQuizResult(user.uid, subjectLabel, liveScore, total, user.class);
@@ -490,7 +515,8 @@ Return ONLY a raw JSON array:
     r.start();
   };
 
-  const avgScore = quizHistory.length ? Math.round(quizHistory.reduce((a, q) => a + q.pct, 0) / quizHistory.length) : 0;
+  const currentClassQuizHistory = quizHistory.filter(q => q.class && String(q.class) === String(user.class));
+  const avgScore = currentClassQuizHistory.length ? Math.round(currentClassQuizHistory.reduce((a, q) => a + q.pct, 0) / currentClassQuizHistory.length) : 0;
 
   const goToChatWithPrompt = (promptText) => {
     setQuizSubject(null);
@@ -1666,7 +1692,7 @@ Return ONLY a raw JSON array:
                   Quizzes
                 </div>
                 <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: C.accent }}>
-                  {quizHistory.length}
+                  {currentClassQuizHistory.length}
                 </div>
               </div>
 
@@ -2105,7 +2131,7 @@ Return ONLY a raw JSON array:
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
                 {[
                   { label: "Streak", val: `🔥 ${streak}d`, color: C.gold },
-                  { label: "Quizzes", val: quizHistory.length, color: C.accent },
+                  { label: "Quizzes", val: currentClassQuizHistory.length, color: C.accent },
                   { label: "Avg Score", val: `${avgScore}%`, color: avgScore >= 70 ? C.green : C.gold },
                   { label: "Questions", val: totalQ, color: C.purple },
                 ].map((s, i) => (
@@ -2118,12 +2144,12 @@ Return ONLY a raw JSON array:
 
               {/* ── SUBJECT MASTERY CARD ── */}
               {(() => {
-                // Group quizHistory by subject
+                // Group currentClassQuizHistory by subject
                 const subjectMap = {};
-                quizHistory.forEach(q => {
+                currentClassQuizHistory.forEach(q => {
                   const s = q.subject || "General";
                   if (!subjectMap[s]) {
-                    subjectMap[s] = { totalPct: 0, count: 0, firstIndex: quizHistory.indexOf(q) };
+                    subjectMap[s] = { totalPct: 0, count: 0, firstIndex: currentClassQuizHistory.indexOf(q) };
                   }
                   subjectMap[s].totalPct += (typeof q.pct === "number" ? q.pct : 0);
                   subjectMap[s].count += 1;
@@ -2301,13 +2327,13 @@ Return ONLY a raw JSON array:
               {/* ── QUIZ HISTORY CARD ── */}
               <Card>
                 <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>
-                  📝 Quiz History{quizHistory.length > 0 ? ` (${quizHistory.length})` : ""}
+                  📝 Quiz History{currentClassQuizHistory.length > 0 ? ` (${currentClassQuizHistory.length})` : ""}
                 </div>
-                {quizHistory.length === 0
+                {currentClassQuizHistory.length === 0
                   ? <div style={{ color: C.muted, fontSize: 14 }}>No quizzes yet. Quiz tab pe jao! 🧠</div>
                   : (
                     <>
-                      {(showAllHistory || quizHistory.length <= 5 ? quizHistory : quizHistory.slice(0, 5)).map((q, i) => (
+                      {(showAllHistory || currentClassQuizHistory.length <= 5 ? currentClassQuizHistory : currentClassQuizHistory.slice(0, 5)).map((q, i) => (
                         <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.subject}</div>
@@ -2359,7 +2385,7 @@ Return ONLY a raw JSON array:
                         </div>
                       ))}
 
-                      {quizHistory.length > 5 && (
+                      {currentClassQuizHistory.length > 5 && (
                         <button
                           type="button"
                           onClick={() => setShowAllHistory(prev => !prev)}
@@ -2390,7 +2416,7 @@ Return ONLY a raw JSON array:
                             e.currentTarget.style.background = C.dim;
                           }}
                         >
-                          <span>{showAllHistory ? "Show recent 5 ▴" : `Show all ${quizHistory.length} quizzes ▾`}</span>
+                          <span>{showAllHistory ? "Show recent 5 ▴" : `Show all ${currentClassQuizHistory.length} quizzes ▾`}</span>
                         </button>
                       )}
                     </>

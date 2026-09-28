@@ -660,7 +660,16 @@ export const CBSE_CURRICULUM = {
           code: "241",
           book: "Mathematics",
           chapters: [
-            { num: 1, name: "Real Numbers", type: "chapter", book: "Mathematics" },
+            {
+              num: 1,
+              name: "Real Numbers",
+              type: "chapter",
+              book: "Mathematics",
+              topics: [
+                "Fundamental Theorem of Arithmetic",
+                "Proofs of irrationality of √2, √3, √5"
+              ]
+            },
             { num: 2, name: "Polynomials", type: "chapter", book: "Mathematics" },
             { num: 3, name: "Pair of Linear Equations in Two Variables", type: "chapter", book: "Mathematics" },
             { num: 4, name: "Quadratic Equations", type: "chapter", book: "Mathematics" },

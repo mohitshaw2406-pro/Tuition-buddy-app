@@ -248,14 +248,18 @@ export const broadcastMessage = async (message) => {
 };
 
 // ─── STUDENT HELPERS ──────────────────────────────────────────────────────────
-export const saveQuizResult = async (uid, subject, score, total) => {
+export const saveQuizResult = async (uid, subject, score, total, studentClass) => {
   const ref = doc(db, "students", uid);
+  const entry = {
+    subject, score, total,
+    date: new Date().toISOString(),
+    pct: Math.round((score / total) * 100)
+  };
+  if (studentClass !== undefined && studentClass !== null) {
+    entry.class = String(studentClass);
+  }
   await updateDoc(ref, {
-    quizHistory: arrayUnion({
-      subject, score, total,
-      date: new Date().toISOString(),
-      pct: Math.round((score / total) * 100)
-    }),
+    quizHistory: arrayUnion(entry),
     lastActive: serverTimestamp(),
   });
 };
