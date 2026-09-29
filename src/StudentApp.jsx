@@ -42,7 +42,24 @@ export default function StudentApp({ user, onLogout }) {
     content: `Namaste ${user.name}! 👋 Main hoon tera Tuition Buddy!\nTu Class ${user.class} mein hai — toh main tumhare level ke hisaab se help karunga! 📚\nAsk me anything — doubt, homework help, ya quiz lena hai toh bol do! 🌟`
   });
 
-  const [messages, setMessages] = useState([getWelcomeMessage()]);
+  const chatStorageKey = `tb_chat_msgs_${user?.uid || "anon"}_c${user?.class || "0"}`;
+
+  const [messages, setMessages] = useState(() => {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        const saved = window.sessionStorage.getItem(chatStorageKey);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load chat messages from sessionStorage:", e);
+    }
+    return [getWelcomeMessage()];
+  });
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -69,7 +86,9 @@ export default function StudentApp({ user, onLogout }) {
   const [answered, setAnswered] = useState(false);
   const [liveScore, setLiveScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(0);
+  const [isTimedOut, setIsTimedOut] = useState(false);
   const finishTriggeredRef = useRef(false);
+  const isTimedOutRef = useRef(false);
 
   const [mode, setMode] = useState("chat");
   const [quizHistory, setQuizHistory] = useState(user.quizHistory || []);
@@ -80,6 +99,15 @@ export default function StudentApp({ user, onLogout }) {
   const isDemo = user.uid === "demo-student";
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        window.sessionStorage.setItem(chatStorageKey, JSON.stringify(messages));
+      }
+    } catch (e) {
+      console.warn("Failed to save chat messages to sessionStorage:", e);
+    }
+  }, [messages, chatStorageKey]);
   useEffect(() => {
     if (!isDemo) {
       updateStreak(user.uid).then(s => setStreak(s));
@@ -321,6 +349,8 @@ Return ONLY a raw JSON array:
       const initialTime = validQuestions.length * secondsPerQuestion;
       setTimeLeft(initialTime);
       finishTriggeredRef.current = false;
+      isTimedOutRef.current = false;
+      setIsTimedOut(false);
 
       setQuizQuestions(validQuestions);
       setQuizStep("quiz");
@@ -392,6 +422,8 @@ Return ONLY a raw JSON array:
   // ── Reset quiz state ─────────────────────────────────────────────────────────
   const resetQuiz = () => {
     finishTriggeredRef.current = false;
+    isTimedOutRef.current = false;
+    setIsTimedOut(false);
     setQuizStep("subject");
     setQuizSubject(null);
     setQuizCourse(null);
@@ -413,6 +445,8 @@ Return ONLY a raw JSON array:
       setTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(timer);
+          isTimedOutRef.current = true;
+          setIsTimedOut(true);
           finishQuizRef.current();
           return 0;
         }
@@ -942,8 +976,8 @@ Return ONLY a raw JSON array:
                   textAlign: "center",
                   margin: "6px 0"
                 }}>
-                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 8 }}>
-                    Koi chapter nahi mila. Doosra keyword try karo.
+                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
+                    Koi chapter nahi mila &ldquo;<strong>{chapterSearch}</strong>&rdquo; ke liye.
                   </div>
                   <button
                     type="button"
@@ -951,16 +985,20 @@ Return ONLY a raw JSON array:
                     style={{
                       background: C.dim,
                       border: `1px solid ${C.border}`,
-                      borderRadius: 6,
-                      padding: "4px 12px",
+                      borderRadius: 8,
+                      padding: "6px 14px",
                       color: color,
                       fontSize: 12,
                       fontWeight: 600,
                       cursor: "pointer",
-                      fontFamily: "inherit"
+                      fontFamily: "inherit",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4
                     }}
                   >
-                    Clear
+                    <span>✕</span>
+                    <span>Clear Search</span>
                   </button>
                 </div>
               );
@@ -1288,9 +1326,32 @@ Return ONLY a raw JSON array:
               <h2 style={{ fontSize: isMobile ? 18 : 20, color: C.text, margin: "0 0 6px", fontWeight: 800 }}>
                 Quiz Complete!
               </h2>
-              <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: isTimedOut ? 14 : 20 }}>
                 {chapterDisplay}
               </div>
+
+              {/* Timeout Notice */}
+              {isTimedOut && (
+                <div style={{
+                  background: "#ef44441a",
+                  border: "1px solid #ef444444",
+                  borderRadius: 12,
+                  padding: "10px 14px",
+                  margin: "0 auto 16px",
+                  maxWidth: 360,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 3,
+                  textAlign: "center"
+                }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444" }}>
+                    ⏱️ Samay Samapt! (Time&apos;s Up)
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted }}>
+                    Time khatam hone se pehle {Object.keys(quizAnswers).length} / {total} sawaal answer kiye
+                  </div>
+                </div>
+              )}
 
               {/* Celebration Icon */}
               <div style={{ fontSize: 52, margin: "10px 0" }}>
@@ -2477,6 +2538,74 @@ Return ONLY a raw JSON array:
               </Card>
             </div>
           </div>
+        )}
+
+        {/* ── MOBILE FIXED BOTTOM NAVIGATION ── */}
+        {isMobile && !(view === "quiz" && (quizStep === "quiz" || quizStep === "chapter" || quizStep === "settings")) && (
+          <nav
+            aria-label="Mobile navigation"
+            style={{
+              flexShrink: 0,
+              display: "grid",
+              gridTemplateColumns: "repeat(4, 1fr)",
+              background: C.card,
+              borderTop: `1px solid ${C.border}`,
+              padding: "4px 6px calc(4px + env(safe-area-inset-bottom, 0px))",
+              zIndex: 30,
+              userSelect: "none"
+            }}
+          >
+            {[
+              { id: "home", icon: "🏠", label: "Home" },
+              { id: "chat", icon: "💬", label: "Doubt" },
+              { id: "quiz", icon: "🧠", label: "Quiz" },
+              { id: "progress", icon: "📊", label: "Progress" }
+            ].map(tab => {
+              const isActive = view === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    setView(tab.id);
+                    if (tab.id === "quiz") resetQuiz();
+                    if (tab.id === "chat" || tab.id === "home") {
+                      setQuizSubject(null);
+                      setSelectedChapter(null);
+                      setQuizCourse(null);
+                    }
+                    setSidebarOpen(false);
+                  }}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 2,
+                    padding: "6px 2px",
+                    background: isActive ? `${C.accent}14` : "transparent",
+                    border: "none",
+                    borderRadius: 8,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    color: isActive ? C.accent : C.muted,
+                    transition: "all 0.15s ease",
+                    minHeight: 48
+                  }}
+                >
+                  <span style={{ fontSize: 18, lineHeight: 1 }}>{tab.icon}</span>
+                  <span style={{
+                    fontSize: 11,
+                    fontWeight: isActive ? 700 : 500,
+                    lineHeight: 1.1,
+                    letterSpacing: -0.2
+                  }}>
+                    {tab.label}
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
         )}
       </div>
 
