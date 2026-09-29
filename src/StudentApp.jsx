@@ -68,6 +68,8 @@ export default function StudentApp({ user, onLogout }) {
   const [currentQIndex, setCurrentQIndex] = useState(0);
   const [answered, setAnswered] = useState(false);
   const [liveScore, setLiveScore] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(0);
+  const finishTriggeredRef = useRef(false);
 
   const [mode, setMode] = useState("chat");
   const [quizHistory, setQuizHistory] = useState(user.quizHistory || []);
@@ -315,6 +317,11 @@ Return ONLY a raw JSON array:
 
       if (validQuestions.length === 0) throw new Error("invalid_questions");
 
+      const secondsPerQuestion = difficulty === "easy" ? 45 : difficulty === "hard" ? 90 : 60;
+      const initialTime = validQuestions.length * secondsPerQuestion;
+      setTimeLeft(initialTime);
+      finishTriggeredRef.current = false;
+
       setQuizQuestions(validQuestions);
       setQuizStep("quiz");
     } catch {
@@ -349,6 +356,9 @@ Return ONLY a raw JSON array:
   };
 
   const finishQuiz = async () => {
+    if (finishTriggeredRef.current) return;
+    finishTriggeredRef.current = true;
+
     const total = quizQuestions.length;
     const pct = Math.round((liveScore / total) * 100);
     setQuizStep("result");
@@ -374,8 +384,14 @@ Return ONLY a raw JSON array:
     }
   };
 
+  const finishQuizRef = useRef(finishQuiz);
+  useEffect(() => {
+    finishQuizRef.current = finishQuiz;
+  });
+
   // ── Reset quiz state ─────────────────────────────────────────────────────────
   const resetQuiz = () => {
+    finishTriggeredRef.current = false;
     setQuizStep("subject");
     setQuizSubject(null);
     setQuizCourse(null);
@@ -389,6 +405,23 @@ Return ONLY a raw JSON array:
     setAnswered(false);
     setLiveScore(0);
   };
+
+  useEffect(() => {
+    if (quizStep !== "quiz") return;
+
+    const timer = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          finishQuizRef.current();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [quizStep]);
 
   // ── CHAT SEND ────────────────────────────────────────────────────────────────
   const send = async (text, isRetry = false) => {
@@ -1107,7 +1140,27 @@ Return ONLY a raw JSON array:
               <span style={{ fontSize: 12, color: C.muted, background: C.dim, borderRadius: 6, padding: "3px 8px" }}>
                 {icon} {quizSubject}{selectedChapter ? ` · Ch.${selectedChapter.num}` : ""}
               </span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: C.muted }}>{currentQIndex + 1} / {quizQuestions.length}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.muted }}>{currentQIndex + 1} / {quizQuestions.length}</span>
+                <span style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "3px 8px",
+                  borderRadius: 6,
+                  background: timeLeft <= 30 ? "#ef444422" : C.dim,
+                  color: timeLeft <= 30 ? "#ef4444" : C.muted,
+                  border: `1px solid ${timeLeft <= 30 ? "#ef444455" : C.border}`,
+                  transition: "all 0.2s ease"
+                }}>
+                  <span>⏱️</span>
+                  <span>
+                    {String(Math.floor(timeLeft / 60)).padStart(2, "0")}:{String(timeLeft % 60).padStart(2, "0")}
+                  </span>
+                </span>
+              </div>
               <span style={{ fontSize: 13, fontWeight: 700, color: "#22C55E" }}>✓ {liveScore}</span>
             </div>
 
