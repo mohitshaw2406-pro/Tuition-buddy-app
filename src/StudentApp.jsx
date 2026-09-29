@@ -63,25 +63,29 @@ function FormattedQuizText({ text }) {
           style={{
             border: "none",
             borderTop: `1px solid ${C.border}`,
-            margin: "6px 0",
+            margin: "8px 0",
             opacity: 0.6
           }}
         />
       );
     }
 
-    // 2. Headings: only if line starts with #+ followed by whitespace (e.g., "### Explanation:")
-    const headingMatch = line.match(/^#{1,6}\s+(.*)$/);
+    // 2. Headings: matches #+ with optional leading whitespace (e.g., "### 5. Human Eye")
+    const headingMatch = trimmed.match(/^#{1,6}\s+(.*)$/);
     if (headingMatch) {
       return (
-        <div key={`h-${lineIdx}`} style={{ fontWeight: 700, margin: "3px 0", color: C.text }}>
+        <div key={`h-${lineIdx}`} style={{ fontWeight: 700, margin: "6px 0 2px", color: C.text }}>
           {renderInlineBold(headingMatch[1], `h-${lineIdx}`)}
         </div>
       );
     }
 
-    // 3. List bullets: only if line starts with "* " or "- " at line start
-    const bulletMatch = line.match(/^(\*|-)\s+(.*)$/);
+    // 3. List bullets and numbered lists: allows leading whitespace, detects indentation
+    const indentMatch = line.match(/^(\s*)/);
+    const leadingSpaces = indentMatch ? indentMatch[1].length : 0;
+    const isNested = leadingSpaces >= 2;
+
+    const bulletMatch = trimmed.match(/^(\*|-)\s+(.*)$/);
     if (bulletMatch) {
       return (
         <div
@@ -91,16 +95,40 @@ function FormattedQuizText({ text }) {
             alignItems: "flex-start",
             gap: 6,
             margin: "2px 0",
-            paddingLeft: 4
+            paddingLeft: isNested ? 18 : 4
           }}
         >
-          <span style={{ color: C.muted, userSelect: "none" }}>•</span>
+          <span style={{ color: C.muted, userSelect: "none", fontSize: isNested ? 11 : 13 }}>
+            {isNested ? "◦" : "•"}
+          </span>
           <span style={{ flex: 1 }}>{renderInlineBold(bulletMatch[2], `li-${lineIdx}`)}</span>
         </div>
       );
     }
 
-    // 4. Normal text line with inline bold support
+    // 4. Numbered lists (e.g., "1. " or "2. ")
+    const numberedMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+    if (numberedMatch) {
+      return (
+        <div
+          key={`ol-${lineIdx}`}
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
+            margin: "2px 0",
+            paddingLeft: isNested ? 18 : 4
+          }}
+        >
+          <span style={{ color: C.muted, userSelect: "none", fontWeight: 600, minWidth: 16 }}>
+            {numberedMatch[1]}.
+          </span>
+          <span style={{ flex: 1 }}>{renderInlineBold(numberedMatch[2], `ol-${lineIdx}`)}</span>
+        </div>
+      );
+    }
+
+    // 5. Normal text line with inline bold support
     return (
       <span key={`ln-${lineIdx}`}>
         {renderInlineBold(line, `ln-${lineIdx}`)}
@@ -766,11 +794,21 @@ Return ONLY a raw JSON array:
       return;
     }
     setHistoryLoading(true);
+    console.log("Loading chat history for:", {
+      uid: user?.uid,
+      isDemo,
+    });
     try {
       const items = await getChatHistory(user.uid, 20);
+      console.log("Chat history loaded:", items);
       setHistoryList(items || []);
     } catch (err) {
-      console.error("Failed to load chat history:", err);
+      console.error("Failed to load chat history:", {
+        code: err?.code,
+        message: err?.message,
+        name: err?.name,
+        error: err
+      });
       setHistoryError("Chat history load nahi ho payi. Kripya dobara try karein.");
     } finally {
       setHistoryLoading(false);
@@ -2563,7 +2601,7 @@ Return ONLY a raw JSON array:
                       border: m.error ? "1px solid #ef444455" : (m.role === "assistant" ? `1px solid ${C.border}` : "none"),
                       fontSize: isMobile ? 13 : 14, lineHeight: 1.65, whiteSpace: "pre-wrap", color: m.error ? "#fca5a5" : C.text
                     }}>
-                      {m.content}
+                      {m.role === "assistant" ? <FormattedQuizText text={m.content} /> : m.content}
                     </div>
                   </div>
                   {/* Inline Copy Button for Normal Assistant Messages */}
