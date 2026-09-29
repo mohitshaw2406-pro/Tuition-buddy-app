@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import {
   SUBJECTS, SYSTEM_PROMPT, callClaude, claudeJSON, detectWeakTopicsFromChat,
-  saveQuizResult, saveDoubts, saveWeakTopics, updateStreak
+  saveQuizResult, saveDoubts, saveWeakTopics, updateStreak,
+  createChatHistory, updateChatHistory, getChatHistory, getChatHistoryById
 } from "./firebase.js";
 import { getChapters, CBSE_CURRICULUM } from "./curriculum.js";
 import { C } from "./constants.js";
@@ -32,6 +33,85 @@ const SUBJECT_COLORS = {
 const getColor = (subject) => SUBJECT_COLORS[subject] || SUBJECT_COLORS.default;
 const getIcon  = (subject) => SUBJECT_ICONS[subject]  || SUBJECT_ICONS.default;
 
+function FormattedQuizText({ text }) {
+  if (text === null || text === undefined) return null;
+  const str = String(text);
+  if (!str) return null;
+
+  // Split into lines to safely handle structural boundaries (headings, lists, dividers)
+  const lines = str.split("\n");
+
+  const renderInlineBold = (lineStr, lineKey) => {
+    // Only parse inline paired **bold** without using dangerouslySetInnerHTML
+    const parts = lineStr.split(/(\*\*[^*]+\*\*)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+        return <strong key={`${lineKey}-b-${i}`}>{part.slice(2, -2)}</strong>;
+      }
+      return part;
+    });
+  };
+
+  const renderedLines = lines.map((line, lineIdx) => {
+    const trimmed = line.trim();
+
+    // 1. Horizontal rules: whole line is only --- or *** or ___ (at least 3 characters)
+    if (/^([-*_])\1{2,}$/.test(trimmed)) {
+      return (
+        <hr
+          key={`hr-${lineIdx}`}
+          style={{
+            border: "none",
+            borderTop: `1px solid ${C.border}`,
+            margin: "6px 0",
+            opacity: 0.6
+          }}
+        />
+      );
+    }
+
+    // 2. Headings: only if line starts with #+ followed by whitespace (e.g., "### Explanation:")
+    const headingMatch = line.match(/^#{1,6}\s+(.*)$/);
+    if (headingMatch) {
+      return (
+        <div key={`h-${lineIdx}`} style={{ fontWeight: 700, margin: "3px 0", color: C.text }}>
+          {renderInlineBold(headingMatch[1], `h-${lineIdx}`)}
+        </div>
+      );
+    }
+
+    // 3. List bullets: only if line starts with "* " or "- " at line start
+    const bulletMatch = line.match(/^(\*|-)\s+(.*)$/);
+    if (bulletMatch) {
+      return (
+        <div
+          key={`li-${lineIdx}`}
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
+            margin: "2px 0",
+            paddingLeft: 4
+          }}
+        >
+          <span style={{ color: C.muted, userSelect: "none" }}>•</span>
+          <span style={{ flex: 1 }}>{renderInlineBold(bulletMatch[2], `li-${lineIdx}`)}</span>
+        </div>
+      );
+    }
+
+    // 4. Normal text line with inline bold support
+    return (
+      <span key={`ln-${lineIdx}`}>
+        {renderInlineBold(line, `ln-${lineIdx}`)}
+        {lineIdx < lines.length - 1 && <br />}
+      </span>
+    );
+  });
+
+  return <>{renderedLines}</>;
+}
+
 export default function StudentApp({ user, onLogout }) {
   const isMobile = useIsMobile();
   const [view, setView] = useState("home");
@@ -43,6 +123,7 @@ export default function StudentApp({ user, onLogout }) {
   });
 
   const chatStorageKey = `tb_chat_msgs_${user?.uid || "anon"}_c${user?.class || "0"}`;
+  const chatIdStorageKey = `tb_chat_id_${user?.uid || "anon"}_c${user?.class || "0"}`;
 
   const [messages, setMessages] = useState(() => {
     try {
@@ -64,6 +145,28 @@ export default function StudentApp({ user, onLogout }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const chatGenIdRef = useRef(0);
+  const [activeChatId, setActiveChatId] = useState(() => {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        return window.sessionStorage.getItem(chatIdStorageKey) || null;
+      }
+    } catch (e) {
+      console.warn("Failed to load chatId from sessionStorage:", e);
+    }
+    return null;
+  });
+  const chatHistoryIdRef = useRef(activeChatId);
+  useEffect(() => {
+    chatHistoryIdRef.current = activeChatId;
+  }, [activeChatId]);
+  const chatCreatePromiseRef = useRef(null);
+  const chatSaveQueueRef = useRef(Promise.resolve());
+  const chatSessionRef = useRef(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyList, setHistoryList] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+  const [historyLoadingId, setHistoryLoadingId] = useState(null);
   const [streak, setStreak] = useState(user.streak || 1);
   const [weakTopics, setWeakTopics] = useState(user.weakTopics || []);
 
@@ -87,6 +190,7 @@ export default function StudentApp({ user, onLogout }) {
   const [liveScore, setLiveScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(0);
   const [isTimedOut, setIsTimedOut] = useState(false);
+  const [showReview, setShowReview] = useState(false);
   const finishTriggeredRef = useRef(false);
   const isTimedOutRef = useRef(false);
 
@@ -436,6 +540,7 @@ Return ONLY a raw JSON array:
     setCurrentQIndex(0);
     setAnswered(false);
     setLiveScore(0);
+    setShowReview(false);
   };
 
   useEffect(() => {
@@ -476,6 +581,71 @@ Return ONLY a raw JSON array:
     const newMsgs = isRetry ? baseMsgs : [...baseMsgs, { role: "user", content: msg }];
     setMessages(newMsgs);
     setLoading(true);
+
+    // ── Asynchronous Chat History Persistence (Initial Create / Update) ───────
+    if (!isDemo && user?.uid) {
+      const realMsgs = newMsgs
+        .filter(m => !m.error)
+        .map(m => ({ role: m.role, content: m.content }));
+      const activeSessionId = chatSessionRef.current;
+
+      chatSaveQueueRef.current = chatSaveQueueRef.current.then(async () => {
+        // If a new chat started while this task was queued, discard update
+        if (chatSessionRef.current !== activeSessionId) return;
+
+        // If no document exists and no creation is currently in flight, start creation
+        if (!chatHistoryIdRef.current && !chatCreatePromiseRef.current) {
+          const initialTitle = msg.length > 50 ? msg.slice(0, 50).trim() + "..." : msg;
+          const chatSubject = quizSubject || "General";
+
+          chatCreatePromiseRef.current = createChatHistory(user.uid, {
+            title: initialTitle,
+            subject: chatSubject,
+            messageCount: realMsgs.length,
+            messages: realMsgs
+          }).then(createdId => {
+            // Only attach ID if this creation still belongs to the active session
+            if (createdId && chatSessionRef.current === activeSessionId) {
+              chatHistoryIdRef.current = createdId;
+              setActiveChatId(createdId);
+              try {
+                if (typeof window !== "undefined" && window.sessionStorage) {
+                  window.sessionStorage.setItem(chatIdStorageKey, createdId);
+                }
+              } catch (e) {
+                console.warn("Failed to save chatId to sessionStorage:", e);
+              }
+            }
+            return createdId;
+          }).catch(err => {
+            console.error("Failed to create chat history document:", err);
+            return null;
+          }).finally(() => {
+            chatCreatePromiseRef.current = null;
+          });
+
+          await chatCreatePromiseRef.current;
+        } else {
+          // If creation is currently in-flight, await it so we have the ID
+          let targetId = chatHistoryIdRef.current;
+          if (!targetId && chatCreatePromiseRef.current) {
+            targetId = await chatCreatePromiseRef.current;
+          }
+
+          if (targetId && chatSessionRef.current === activeSessionId) {
+            await updateChatHistory(user.uid, targetId, {
+              messageCount: realMsgs.length,
+              messages: realMsgs
+            }).catch(err => {
+              console.error("Failed to update chat history document:", err);
+            });
+          }
+        }
+      }).catch(queueErr => {
+        console.error("Chat persistence queue error:", queueErr);
+      });
+    }
+
     try {
       let contextNote = `Student is in Class ${user.class}.`;
       if (quizSubject) {
@@ -507,6 +677,35 @@ Return ONLY a raw JSON array:
         setMessages(finalMsgs);
         setTotalQ(prev => prev + 1);
         if (!isDemo) saveDoubts(user.uid, 1);
+
+        // ── Asynchronous Chat History Persistence (Assistant Reply) ─────────
+        if (!isDemo && user?.uid) {
+          const cleanMsgs = finalMsgs
+            .filter(m => !m.error)
+            .map(m => ({ role: m.role, content: m.content }));
+          const activeSessionId = chatSessionRef.current;
+
+          chatSaveQueueRef.current = chatSaveQueueRef.current.then(async () => {
+            if (chatSessionRef.current !== activeSessionId) return;
+
+            let targetId = chatHistoryIdRef.current;
+            if (!targetId && chatCreatePromiseRef.current) {
+              targetId = await chatCreatePromiseRef.current;
+            }
+
+            if (targetId && chatSessionRef.current === activeSessionId) {
+              await updateChatHistory(user.uid, targetId, {
+                messageCount: cleanMsgs.length,
+                messages: cleanMsgs
+              }).catch(err => {
+                console.error("Failed to update chat history with assistant reply:", err);
+              });
+            }
+          }).catch(queueErr => {
+            console.error("Chat persistence queue error (assistant reply):", queueErr);
+          });
+        }
+
         if (finalMsgs.length >= 10 && finalMsgs.length % 10 === 0) {
           const topics = await detectWeakTopicsFromChat(finalMsgs);
           if (topics.length && chatGenIdRef.current === currentChatGenId) {
@@ -539,12 +738,80 @@ Return ONLY a raw JSON array:
       if (!ok) return;
     }
     chatGenIdRef.current += 1;
+    chatSessionRef.current += 1;
+    chatHistoryIdRef.current = null;
+    setActiveChatId(null);
+    chatCreatePromiseRef.current = null;
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        window.sessionStorage.removeItem(chatIdStorageKey);
+      }
+    } catch (e) {
+      console.warn("Failed to clear chatId from sessionStorage:", e);
+    }
     setMessages([getWelcomeMessage()]);
     setInput("");
     setLoading(false);
     setQuizSubject(null);
     setSelectedChapter(null);
     setQuizCourse(null);
+  };
+
+  const handleOpenHistory = async () => {
+    setHistoryOpen(true);
+    setHistoryError(null);
+    if (isDemo || !user?.uid) {
+      setHistoryList([]);
+      setHistoryLoading(false);
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      const items = await getChatHistory(user.uid, 20);
+      setHistoryList(items || []);
+    } catch (err) {
+      console.error("Failed to load chat history:", err);
+      setHistoryError("Chat history load nahi ho payi. Kripya dobara try karein.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const handleSelectHistoryChat = async (item) => {
+    if (!item?.id || historyLoadingId) return;
+    setHistoryLoadingId(item.id);
+    try {
+      const fullChat = await getChatHistoryById(user.uid, item.id);
+      if (fullChat && Array.isArray(fullChat.messages) && fullChat.messages.length > 0) {
+        // Increment session counter and cancel any stale in-flight generation
+        chatGenIdRef.current += 1;
+        chatSessionRef.current += 1;
+        chatCreatePromiseRef.current = null;
+        chatHistoryIdRef.current = fullChat.id;
+        setActiveChatId(fullChat.id);
+
+        try {
+          if (typeof window !== "undefined" && window.sessionStorage) {
+            window.sessionStorage.setItem(chatIdStorageKey, fullChat.id);
+          }
+        } catch (e) {
+          console.warn("Failed to persist restored chatId to sessionStorage:", e);
+        }
+
+        // Restore messages into state (this will also sync into sessionStorage via existing effect)
+        setMessages(fullChat.messages);
+        setInput("");
+        setLoading(false);
+        setHistoryOpen(false);
+      } else {
+        setHistoryError("Is chat ke messages load nahi ho paaye.");
+      }
+    } catch (err) {
+      console.error("Failed to fetch full chat by id:", err);
+      setHistoryError("Chat open karne mein problem aayi. Dobara try karein.");
+    } finally {
+      setHistoryLoadingId(null);
+    }
   };
 
   const copyMessage = async (text, index) => {
@@ -1205,7 +1472,7 @@ Return ONLY a raw JSON array:
             {/* Question */}
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: "18px 16px", marginBottom: 14 }}>
               <div style={{ fontSize: isMobile ? 14 : 15, fontWeight: 600, color: C.text, lineHeight: 1.6 }}>
-                Q{currentQIndex + 1}. {q.question}
+                Q{currentQIndex + 1}. <FormattedQuizText text={q.question} />
               </div>
             </div>
 
@@ -1232,7 +1499,7 @@ Return ONLY a raw JSON array:
                       background: answered && idx === q.correct ? "#22C55E" : answered && idx === userAnswer ? "#EF4444" : C.dim,
                       color: answered && (idx === q.correct || idx === userAnswer) ? "#fff" : C.muted,
                     }}>{["A","B","C","D"][idx]}</span>
-                    {opt}
+                    <span><FormattedQuizText text={opt} /></span>
                   </button>
                 );
               })}
@@ -1241,7 +1508,8 @@ Return ONLY a raw JSON array:
             {/* Explanation */}
             {answered && q.explanation && (
               <div style={{ marginTop: 12, padding: "12px 14px", background: "#052e1633", border: `1px solid ${userAnswer === q.correct ? "#22C55E44" : "#F59E0B44"}`, borderRadius: 10, fontSize: 13, color: "#86efac", lineHeight: 1.5 }}>
-                <strong>{userAnswer === q.correct ? "✅ Sahi!" : "❌ Galat!"}</strong> {q.explanation}
+                <strong>{userAnswer === q.correct ? "✅ Sahi!" : "❌ Galat!"}</strong>{" "}
+                <FormattedQuizText text={q.explanation} />
               </div>
             )}
 
@@ -1422,6 +1690,39 @@ Return ONLY a raw JSON array:
                   <span>Chat mein Discuss Karo</span>
                 </button>
 
+                {/* Collapsible Review Questions & Solutions Button */}
+                {quizQuestions.length > 0 && (() => {
+                  const wrongCount = quizQuestions.filter((q, idx) => quizAnswers[idx] !== q.correct).length;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setShowReview(prev => !prev)}
+                      style={{
+                        width: "100%",
+                        border: `1.5px solid ${showReview ? color : C.border}`,
+                        borderRadius: 12,
+                        padding: "12px 14px",
+                        background: showReview ? `${color}15` : C.dim,
+                        color: showReview ? color : C.text,
+                        fontSize: 14,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 8,
+                        transition: "all 0.15s ease"
+                      }}
+                    >
+                      <span>🔍</span>
+                      <span>
+                        {showReview ? "Hide Questions & Solutions ▴" : `Review Questions & Solutions (${wrongCount} ${wrongCount === 1 ? "mistake" : "mistakes"}) ▾`}
+                      </span>
+                    </button>
+                  );
+                })()}
+
                 <div style={{ display: "flex", gap: 10 }}>
                   <button
                     type="button"
@@ -1471,6 +1772,150 @@ Return ONLY a raw JSON array:
                     <span>Home / Study Hub</span>
                   </button>
                 </div>
+
+                {/* Collapsible Questions & Solutions List */}
+                {showReview && quizQuestions.length > 0 && (
+                  <div style={{
+                    marginTop: 14,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                    textAlign: "left"
+                  }}>
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "4px 2px",
+                      borderBottom: `1px solid ${C.border}`,
+                      paddingBottom: 8
+                    }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+                        Question Analysis
+                      </span>
+                      <span style={{ fontSize: 12, color: C.muted }}>
+                        {liveScore} correct · {quizQuestions.length - liveScore} mistakes
+                      </span>
+                    </div>
+
+                    {quizQuestions.map((q, idx) => {
+                      const userAnsIdx = quizAnswers[idx];
+                      const isAnswered = userAnsIdx !== undefined && userAnsIdx !== null;
+                      const isCorrect = isAnswered && userAnsIdx === q.correct;
+                      const isUnanswered = !isAnswered;
+
+                      const statusColor = isCorrect ? "#22C55E" : isUnanswered ? "#F59E0B" : "#EF4444";
+                      const statusBg = isCorrect ? "#22C55E12" : isUnanswered ? "#F59E0B12" : "#EF444412";
+                      const statusBorder = isCorrect ? "#22C55E33" : isUnanswered ? "#F59E0B33" : "#EF444433";
+                      const statusLabel = isCorrect ? "✅ Sahi (Correct)" : isUnanswered ? "⏱️ Unanswered" : "❌ Galat (Wrong)";
+
+                      return (
+                        <div
+                          key={idx}
+                          style={{
+                            background: C.card,
+                            border: `1px solid ${statusBorder}`,
+                            borderRadius: 12,
+                            padding: "14px",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 10
+                          }}
+                        >
+                          {/* Header row with Q Number and status */}
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: C.muted }}>
+                              Question {idx + 1} of {quizQuestions.length}
+                            </span>
+                            <span style={{
+                              fontSize: 11,
+                              fontWeight: 700,
+                              color: statusColor,
+                              background: statusBg,
+                              border: `1px solid ${statusBorder}`,
+                              borderRadius: 6,
+                              padding: "2px 8px"
+                            }}>
+                              {statusLabel}
+                            </span>
+                          </div>
+
+                          {/* Question text */}
+                          <div style={{ fontSize: 14, fontWeight: 600, color: C.text, lineHeight: 1.5 }}>
+                            <FormattedQuizText text={q.question} />
+                          </div>
+
+                          {/* Options breakdown */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            {/* Student's answer if answered and wrong, or unanswered notice */}
+                            {!isCorrect && (
+                              <div style={{
+                                fontSize: 12,
+                                color: isUnanswered ? "#F59E0B" : "#fca5a5",
+                                background: isUnanswered ? "#F59E0B15" : "#450a0a33",
+                                border: `1px solid ${isUnanswered ? "#F59E0B33" : "#ef444433"}`,
+                                borderRadius: 8,
+                                padding: "6px 10px",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6
+                              }}>
+                                <span style={{ fontWeight: 700 }}>
+                                  {isUnanswered ? "Tumhara Jawab:" : "Tumhara Jawab (Wrong):"}
+                                </span>
+                                <span>
+                                  {isUnanswered ? (
+                                    "Koi option select nahi kiya"
+                                  ) : (
+                                    <>
+                                      {["A","B","C","D"][userAnsIdx]}.{" "}
+                                      <FormattedQuizText text={q.options[userAnsIdx]} />
+                                    </>
+                                  )}
+                                </span>
+                              </div>
+                            )}
+
+                            {/* Correct answer */}
+                            <div style={{
+                              fontSize: 12,
+                              color: "#86efac",
+                              background: "#052e1633",
+                              border: "1px solid #22C55E33",
+                              borderRadius: 8,
+                              padding: "6px 10px",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6
+                            }}>
+                              <span style={{ fontWeight: 700 }}>Sahi Jawab (Correct):</span>
+                              <span>
+                                {["A","B","C","D"][q.correct]}.{" "}
+                                <FormattedQuizText text={q.options[q.correct]} />
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Explanation */}
+                          {q.explanation && (
+                            <div style={{
+                              fontSize: 12,
+                              color: C.muted,
+                              lineHeight: 1.45,
+                              background: C.dim,
+                              borderRadius: 8,
+                              padding: "8px 10px",
+                              borderLeft: `3px solid ${color}`
+                            }}>
+                              <span style={{ fontWeight: 700, color: C.text }}>Explanation: </span>
+                              <FormattedQuizText text={q.explanation} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1944,32 +2389,61 @@ Return ONLY a raw JSON array:
                 })}
               </div>
 
-              <button
-                type="button"
-                onClick={handleNewChat}
-                disabled={loading}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  padding: isMobile ? "6px 10px" : "6px 12px",
-                  background: C.dim,
-                  border: `1px solid ${C.border}`,
-                  borderRadius: 10,
-                  color: loading ? C.muted : C.text,
-                  fontSize: isMobile ? 12 : 13,
-                  fontWeight: 600,
-                  cursor: loading ? "not-allowed" : "pointer",
-                  opacity: loading ? 0.6 : 1,
-                  fontFamily: "inherit",
-                  whiteSpace: "nowrap",
-                  transition: "all 0.15s ease"
-                }}
-                title={loading ? "AI reply generate ho raha hai..." : "Nayi chat shuru karo"}
-              >
-                <span>✨</span>
-                <span>Nayi Chat</span>
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={handleOpenHistory}
+                  disabled={loading}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: isMobile ? "6px 10px" : "6px 12px",
+                    background: C.dim,
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 10,
+                    color: loading ? C.muted : C.text,
+                    fontSize: isMobile ? 12 : 13,
+                    fontWeight: 600,
+                    cursor: loading ? "not-allowed" : "pointer",
+                    opacity: loading ? 0.6 : 1,
+                    fontFamily: "inherit",
+                    whiteSpace: "nowrap",
+                    transition: "all 0.15s ease"
+                  }}
+                  title="Purani chats dekho"
+                >
+                  <span>🕒</span>
+                  <span>History</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleNewChat}
+                  disabled={loading}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: isMobile ? "6px 10px" : "6px 12px",
+                    background: C.dim,
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 10,
+                    color: loading ? C.muted : C.text,
+                    fontSize: isMobile ? 12 : 13,
+                    fontWeight: 600,
+                    cursor: loading ? "not-allowed" : "pointer",
+                    opacity: loading ? 0.6 : 1,
+                    fontFamily: "inherit",
+                    whiteSpace: "nowrap",
+                    transition: "all 0.15s ease"
+                  }}
+                  title={loading ? "AI reply generate ho raha hai..." : "Nayi chat shuru karo"}
+                >
+                  <span>✨</span>
+                  <span>Nayi Chat</span>
+                </button>
+              </div>
             </div>
 
             {/* 2. ACTIVE CHAT CONTEXT CHIP & DYNAMIC SUBJECT QUICK-CHIPS */}
@@ -2227,6 +2701,207 @@ Return ONLY a raw JSON array:
             </div>
             {!isMobile && <div style={{ textAlign: "center", fontSize: 11, color: C.muted, marginTop: 5 }}>Enter to send • Shift+Enter new line • 🎤 voice</div>}
           </div>
+
+          {/* ── CHAT HISTORY MODAL / PANEL ── */}
+          {historyOpen && (
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0, 0, 0, 0.65)",
+                backdropFilter: "blur(4px)",
+                display: "flex",
+                alignItems: isMobile ? "flex-end" : "center",
+                justifyContent: "center",
+                zIndex: 1000,
+                padding: isMobile ? 0 : 20
+              }}
+              onClick={() => setHistoryOpen(false)}
+            >
+              <div
+                style={{
+                  background: C.card,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: isMobile ? "20px 20px 0 0" : 16,
+                  width: "100%",
+                  maxWidth: isMobile ? "100%" : 460,
+                  maxHeight: isMobile ? "80vh" : "75vh",
+                  display: "flex",
+                  flexDirection: "column",
+                  boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
+                  overflow: "hidden"
+                }}
+                onClick={e => e.stopPropagation()}
+              >
+                {/* Modal Header */}
+                <div style={{
+                  padding: "14px 16px",
+                  borderBottom: `1px solid ${C.border}`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  background: C.dim
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 18 }}>🕒</span>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Purani Chats (Chat History)</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryOpen(false)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: C.muted,
+                      fontSize: 20,
+                      cursor: "pointer",
+                      padding: "2px 6px",
+                      lineHeight: 1
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Modal Body */}
+                <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {historyLoading ? (
+                    <div style={{ padding: "36px 16px", textAlign: "center", color: C.muted, fontSize: 14 }}>
+                      <div style={{ fontSize: 26, marginBottom: 8 }}>⏳</div>
+                      Chats load ho rahi hain...
+                    </div>
+                  ) : historyError ? (
+                    <div style={{ padding: "24px 16px", textAlign: "center" }}>
+                      <div style={{ color: "#fca5a5", fontSize: 13, marginBottom: 12 }}>{historyError}</div>
+                      <button
+                        type="button"
+                        onClick={handleOpenHistory}
+                        style={{
+                          background: C.dim,
+                          border: `1px solid ${C.border}`,
+                          borderRadius: 8,
+                          padding: "6px 14px",
+                          color: C.accent,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: "pointer"
+                        }}
+                      >
+                        🔄 Dobara Try Karein
+                      </button>
+                    </div>
+                  ) : historyList.length === 0 ? (
+                    <div style={{ padding: "40px 16px", textAlign: "center", color: C.muted }}>
+                      <div style={{ fontSize: 32, marginBottom: 8 }}>💬</div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 4 }}>
+                        Koi purani chat nahi mili
+                      </div>
+                      <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                        Jab aap koi doubt ya question poochhenge, toh woh yahan save ho jayegi!
+                      </div>
+                    </div>
+                  ) : (
+                    historyList.map(item => {
+                      const isCurrentActive = activeChatId === item.id;
+                      const isOpening = historyLoadingId === item.id;
+                      let dateStr = "";
+                      if (item.updatedAt) {
+                        try {
+                          const d = typeof item.updatedAt.toDate === "function"
+                            ? item.updatedAt.toDate()
+                            : new Date(item.updatedAt);
+                          if (!isNaN(d.getTime())) {
+                            dateStr = d.toLocaleDateString("en-IN", {
+                              day: "numeric",
+                              month: "short",
+                              hour: "2-digit",
+                              minute: "2-digit"
+                            });
+                          }
+                        } catch {
+                          // ignore formatting errors
+                        }
+                      }
+
+                      return (
+                        <div
+                          key={item.id}
+                          onClick={() => handleSelectHistoryChat(item)}
+                          style={{
+                            background: isCurrentActive ? `${C.accent}18` : C.dim,
+                            border: `1px solid ${isCurrentActive ? C.accent : C.border}`,
+                            borderRadius: 12,
+                            padding: "10px 12px",
+                            cursor: isOpening ? "wait" : "pointer",
+                            transition: "all 0.15s ease",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 4,
+                            opacity: isOpening ? 0.7 : 1
+                          }}
+                          onMouseEnter={e => {
+                            if (!isCurrentActive) e.currentTarget.style.borderColor = C.accent + "88";
+                          }}
+                          onMouseLeave={e => {
+                            if (!isCurrentActive) e.currentTarget.style.borderColor = C.border;
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{
+                              fontSize: 13,
+                              fontWeight: 700,
+                              color: isCurrentActive ? C.accent : C.text,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap"
+                            }}>
+                              {item.title || "Untitled Chat"}
+                            </span>
+                            {isCurrentActive && (
+                              <span style={{
+                                fontSize: 10,
+                                fontWeight: 700,
+                                background: C.accent,
+                                color: "#fff",
+                                borderRadius: 6,
+                                padding: "1px 6px",
+                                flexShrink: 0
+                              }}>
+                                Active
+                              </span>
+                            )}
+                          </div>
+
+                          <div style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            fontSize: 11,
+                            color: C.muted
+                          }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              {item.subject && item.subject !== "General" && (
+                                <span style={{
+                                  background: C.card,
+                                  border: `1px solid ${C.border}`,
+                                  borderRadius: 4,
+                                  padding: "1px 6px"
+                                }}>
+                                  {item.subject}
+                                </span>
+                              )}
+                              <span>{item.messageCount || 0} messages</span>
+                            </div>
+                            {dateStr && <span>{dateStr}</span>}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </>)}
 
         {/* ── QUIZ VIEW ── */}

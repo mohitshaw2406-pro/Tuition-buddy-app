@@ -5,7 +5,8 @@ import {
 } from "firebase/auth";
 import {
   getFirestore, doc, setDoc, getDoc, updateDoc,
-  collection, getDocs, arrayUnion, serverTimestamp
+  collection, getDocs, arrayUnion, serverTimestamp,
+  addDoc, query, orderBy, limit
 } from "firebase/firestore";
 
 export const FIREBASE_CONFIG = {
@@ -291,6 +292,81 @@ export const updateStreak = async (uid) => {
   else if (data.lastStreakDate === yesterday) streak = (data.streak || 0) + 1;
   await updateDoc(ref, { streak, lastStreakDate: today });
   return streak;
+};
+
+// ─── CHAT HISTORY HELPERS ─────────────────────────────────────────────────────
+export const createChatHistory = async (uid, chatData) => {
+  if (!uid || uid === "demo-student") return null;
+  const historyRef = collection(db, "students", uid, "chatHistory");
+  const docRef = await addDoc(historyRef, {
+    title: chatData.title || "New Chat",
+    subject: chatData.subject || "General",
+    messageCount: Array.isArray(chatData.messages) ? chatData.messages.length : (chatData.messageCount || 0),
+    messages: Array.isArray(chatData.messages)
+      ? chatData.messages.map(m => ({ role: m.role, content: m.content }))
+      : [],
+    createdAt: chatData.createdAt || serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+  return docRef.id;
+};
+
+export const updateChatHistory = async (uid, chatId, chatData) => {
+  if (!uid || !chatId || uid === "demo-student") return;
+  const chatRef = doc(db, "students", uid, "chatHistory", chatId);
+  const updates = {
+    updatedAt: serverTimestamp()
+  };
+
+  if (chatData.title !== undefined) updates.title = chatData.title;
+  if (chatData.subject !== undefined) updates.subject = chatData.subject;
+  if (chatData.messageCount !== undefined) {
+    updates.messageCount = chatData.messageCount;
+  } else if (Array.isArray(chatData.messages)) {
+    updates.messageCount = chatData.messages.length;
+  }
+  if (Array.isArray(chatData.messages)) {
+    updates.messages = chatData.messages.map(m => ({ role: m.role, content: m.content }));
+  }
+
+  await updateDoc(chatRef, updates);
+};
+
+export const getChatHistory = async (uid, limitCount = 20) => {
+  if (!uid || uid === "demo-student") return [];
+  const historyRef = collection(db, "students", uid, "chatHistory");
+  const q = query(historyRef, orderBy("updatedAt", "desc"), limit(limitCount));
+  const snap = await getDocs(q);
+  return snap.docs.map(d => {
+    const data = d.data();
+    return {
+      id: d.id,
+      title: data.title || "Chat",
+      subject: data.subject || "General",
+      messageCount: data.messageCount || (Array.isArray(data.messages) ? data.messages.length : 0),
+      createdAt: data.createdAt,
+      updatedAt: data.updatedAt
+    };
+  });
+};
+
+export const getChatHistoryById = async (uid, chatId) => {
+  if (!uid || !chatId || uid === "demo-student") return null;
+  const chatRef = doc(db, "students", uid, "chatHistory", chatId);
+  const snap = await getDoc(chatRef);
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  return {
+    id: snap.id,
+    title: data.title || "Chat",
+    subject: data.subject || "General",
+    messageCount: data.messageCount || (Array.isArray(data.messages) ? data.messages.length : 0),
+    createdAt: data.createdAt,
+    updatedAt: data.updatedAt,
+    messages: Array.isArray(data.messages)
+      ? data.messages.map(m => ({ role: m.role, content: m.content }))
+      : []
+  };
 };
 
 export const verifyAdminSession = async (user) => {

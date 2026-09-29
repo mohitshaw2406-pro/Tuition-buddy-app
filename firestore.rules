@@ -54,6 +54,13 @@ service cloud.firestore {
       // - ONLY Admin may delete student documents
       // - Students CANNOT delete their own document
       allow delete: if isAdmin();
+
+      // CHAT HISTORY SUBCOLLECTION:
+      // - Admin can read/write student chat history
+      // - A student can read/write ONLY their own chat history
+      match /chatHistory/{chatId} {
+        allow read, write: if isAdmin() || isOwner(studentId);
+      }
     }
   }
 }
